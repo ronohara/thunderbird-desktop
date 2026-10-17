@@ -79,6 +79,59 @@ export var GPGME = {
     return GPGMELib.exportKeys(email, false, keyFilterFunction);
   },
 
+  /**
+   * Fingerprints of keys in the external GnuPG keyring that hold a secret key
+   * for the given email address. Only the fingerprints are retrieved; no
+   * secret key material is exported.
+   *
+   * Expired keys are included, because callers decide what to do about
+   * expiry; revoked, disabled and invalid keys are not.
+   *
+   * @param {string} [email] - The email address to search for. Omit to list
+   *   every secret key in the keyring.
+   *
+   * @returns {string[]} - Fingerprints of matching secret keys.
+   */
+  getSecretKeysForEmail(email) {
+    const wanted = email ? email.toLowerCase() : null;
+
+    function keyFilterFunction(key) {
+      if (
+        key.contents.bitfield & GPGMELib.gpgme_key_t_revoked ||
+        key.contents.bitfield & GPGMELib.gpgme_key_t_disabled ||
+        key.contents.bitfield & GPGMELib.gpgme_key_t_invalid
+      ) {
+        return false;
+      }
+
+      if (!wanted) {
+        return true;
+      }
+
+      let nextUid = key.contents.uids;
+      while (nextUid && !nextUid.isNull()) {
+        if (nextUid.contents.email.readString().toLowerCase() == wanted) {
+          return true;
+        }
+        nextUid = nextUid.contents.next;
+      }
+      return false;
+    }
+
+    return GPGMELib.listKeys(email ?? "", true, keyFilterFunction);
+  },
+
+  /**
+   * Fingerprints of secret keys in GnuPG that match the given address, or all
+   * of them when no address is given.
+   *
+   * @param {string} [email] - The email address to match.
+   * @returns {string[]} Fingerprints.
+   */
+  getSecretKeyFingerprintsForEmail(email) {
+    return this.getSecretKeysForEmail(email).map(key => key.fpr);
+  },
+
   async decrypt(encrypted_string, enArmorCB) {
     const arr = encrypted_string.split("").map(e => e.charCodeAt());
     const encrypted_array = lazy.ctypes.uint8_t.array()(arr);
@@ -175,6 +228,220 @@ export var GPGME = {
     }
 
     GPGMELib.gpgme_release(c1);
+
+    return result;
+  },
+
+  /**
+   * Obtain a key handle from GnuPG, importing the public key first when GnuPG
+   * does not hold it yet. GnuPG can only encrypt to keys in its own keyring, so
+   * a recipient known only to Thunderbird's store has to be copied in.
+   *
+   * @param {object} ctx - An initialized gpgme context.
+   * @param {object} recipient - The key to obtain.
+   * @param {string} recipient.fpr - Fingerprint or key id to look up.
+   * @param {string} [recipient.keyBlock] - ASCII armored public key to
+   *   import when GnuPG does not already hold the key.
+   * @returns {?object} The gpgme_key_t handle, or null.
+   */
+  _getKeyHandle(ctx, { fpr, keyBlock }) {
+    const keyHandle = new GPGMELib.gpgme_key_t();
+    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), 0)) {
+      return keyHandle;
+    }
+
+    if (!keyBlock) {
+      return null;
+    }
+
+    const data = new GPGMELib.gpgme_data_t();
+    const tmp_array = lazy.ctypes.char.array()(keyBlock);
+    if (
+      GPGMELib.gpgme_data_new_from_mem(
+        data.address(),
+        tmp_array,
+        tmp_array.length - 1,
+        1
+      )
+    ) {
+      return null;
+    }
+
+    const importResult = GPGMELib.gpgme_op_import(ctx, data);
+    GPGMELib.gpgme_data_release(data);
+    if (importResult) {
+      return null;
+    }
+
+    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), 0)) {
+      return keyHandle;
+    }
+    return null;
+  },
+
+  /**
+   * Encrypt, and optionally sign, through GnuPG.
+   *
+   * @param {string} plaintext - The data to encrypt.
+   * @param {object} args - The encryption parameters, as built by
+   *   EnigmailEncryption.getCryptParams.
+   * @param {object} resultStatus - Out parameter receiving exitCode and
+   *   statusFlags.
+   * @param {object[]} recipients - The keys to encrypt to.
+   * @param {string} recipients[].fpr - Fingerprint or key id of the recipient.
+   * @param {string} [recipients[].keyBlock] - ASCII armored public key,
+   *   imported when GnuPG does not hold the key.
+   * @param {string} [signingKeyId] - Key id or fingerprint to sign with.
+   *   Required when args.sign is set.
+   * @returns {?string} The encrypted data, or null on failure.
+   */
+  async encrypt(plaintext, args, resultStatus, recipients, signingKeyId) {
+    resultStatus.exitCode = -1;
+    resultStatus.statusFlags = 0;
+    resultStatus.statusMsg = "";
+    resultStatus.errorMsg = "";
+
+    if (!args.encrypt) {
+      throw new Error("invalid encrypt parameters");
+    }
+    if (!plaintext) {
+      throw new Error("cannot encrypt empty data");
+    }
+    if (!recipients || !recipients.length) {
+      throw new Error("no recipients for encryption");
+    }
+
+    const ctx = new GPGMELib.gpgme_ctx_t();
+    if (GPGMELib.gpgme_new(ctx.address())) {
+      throw new Error("gpgme_new failed");
+    }
+    GPGMELib.gpgme_set_armor(ctx, args.armor ? 1 : 0);
+
+    const keyHandles = [];
+    let result = null;
+
+    try {
+      for (const rcp of recipients) {
+        const keyHandle = this._getKeyHandle(ctx, rcp);
+        if (!keyHandle) {
+          return null;
+        }
+        keyHandles.push(keyHandle);
+      }
+
+      const keyArray = GPGMELib.gpgme_key_t.array(keyHandles.length + 1)();
+      for (let i = 0; i < keyHandles.length; i++) {
+        keyArray[i] = keyHandles[i];
+      }
+      keyArray[keyHandles.length] = new GPGMELib.gpgme_key_t();
+
+      if (args.sign) {
+        if (!signingKeyId) {
+          throw new Error("missing signing key for encrypted and signed data");
+        }
+        const signerHandle = this._getKeyHandle(ctx, { fpr: signingKeyId });
+        if (!signerHandle) {
+          return null;
+        }
+        keyHandles.push(signerHandle);
+        GPGMELib.gpgme_set_textmode(ctx, 1);
+        if (GPGMELib.gpgme_signers_add(ctx, signerHandle)) {
+          return null;
+        }
+      }
+
+      const tmp_array = lazy.ctypes.char.array()(plaintext);
+      const data_plaintext = new GPGMELib.gpgme_data_t();
+      if (
+        GPGMELib.gpgme_data_new_from_mem(
+          data_plaintext.address(),
+          tmp_array,
+          tmp_array.length - 1,
+          0
+        )
+      ) {
+        return null;
+      }
+
+      const data_ciphertext = new GPGMELib.gpgme_data_t();
+      if (GPGMELib.gpgme_data_new(data_ciphertext.address())) {
+        GPGMELib.gpgme_data_release(data_plaintext);
+        return null;
+      }
+
+      const flags = GPGMELib.GPGME_ENCRYPT_ALWAYS_TRUST;
+      const exitCode = args.sign
+        ? GPGMELib.gpgme_op_encrypt_sign(
+            ctx,
+            keyArray,
+            flags,
+            data_plaintext,
+            data_ciphertext
+          )
+        : GPGMELib.gpgme_op_encrypt(
+            ctx,
+            keyArray,
+            flags,
+            data_plaintext,
+            data_ciphertext
+          );
+
+      GPGMELib.gpgme_data_release(data_plaintext);
+
+      if (exitCode != GPGMELib.GPG_ERR_NO_ERROR) {
+        GPGMELib.gpgme_data_release(data_ciphertext);
+        return null;
+      }
+
+      const result_len = new lazy.ctypes.size_t();
+      const result_buf = GPGMELib.gpgme_data_release_and_get_mem(
+        data_ciphertext,
+        result_len.address()
+      );
+
+      if (!result_buf.isNull()) {
+        // The output is armored text or raw OpenPGP packets. Deciding which
+        // by the bytes rather than by the requested flag also covers a
+        // gpg.conf that forces armor.
+        const armorHead = "-----BEGIN PGP MESSAGE-----";
+        let isArmored = false;
+        try {
+          const head = lazy.ctypes.cast(
+            result_buf,
+            lazy.ctypes.char.array(armorHead.length).ptr
+          ).contents;
+          isArmored = head.readString() == armorHead;
+        } catch (ex) {}
+
+        if (isArmored) {
+          const unwrapped = lazy.ctypes.cast(
+            result_buf,
+            lazy.ctypes.char.array(result_len.value).ptr
+          ).contents;
+          result = unwrapped.readString();
+        } else {
+          const unwrapped = lazy.ctypes.cast(
+            result_buf,
+            lazy.ctypes.uint8_t.array(result_len.value).ptr
+          ).contents;
+          result = unwrapped.readTypedArray();
+        }
+        GPGMELib.gpgme_free(result_buf);
+      }
+
+      if (result) {
+        resultStatus.exitCode = 0;
+        resultStatus.statusFlags |= lazy.EnigmailConstants.END_ENCRYPTION;
+        if (args.sign) {
+          resultStatus.statusFlags |= lazy.EnigmailConstants.SIG_CREATED;
+        }
+      }
+    } finally {
+      for (const keyHandle of keyHandles) {
+        GPGMELib.gpgme_key_release(keyHandle);
+      }
+      GPGMELib.gpgme_release(ctx);
+    }
 
     return result;
   },

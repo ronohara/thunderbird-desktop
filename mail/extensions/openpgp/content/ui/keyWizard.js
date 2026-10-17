@@ -28,6 +28,9 @@ var { PgpSqliteDb2 } = ChromeUtils.importESModule(
 var { RNP } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/RNP.sys.mjs"
 );
+var { GPGME } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/GPGME.sys.mjs"
+);
 
 ChromeUtils.defineESModuleGetters(this, {
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
@@ -271,7 +274,7 @@ async function wizardNextStep() {
       break;
 
     case "external":
-      openPgpExternalComplete();
+      await openPgpExternalComplete();
       break;
   }
 }
@@ -1145,22 +1148,96 @@ function normalizeKeyInput(key) {
 }
 
 /**
+ * Return the full fingerprint if the input was one, otherwise an empty string.
+ *
+ * @param {string} key - Raw value of the key id field.
+ * @returns {string} The uppercase fingerprint, or "".
+ */
+function fingerprintFromInput(key) {
+  const cleaned = key.replace(/^0x/i, "").replaceAll(" ", "").toUpperCase();
+  return cleaned.length == 40 || cleaned.length == 64 ? cleaned : "";
+}
+
+/**
+ * Look the entered key up in the external GnuPG keyring.
+ *
+ * @param {string} keyId - Normalized key id from the input.
+ * @param {string} fingerprint - Full fingerprint from the input, or "".
+ * @returns {object} With a status of "disabled", "unavailable",
+ *   "not-found" or "found"; the latter also carries the fingerprint and
+ *   the ASCII armored public key block.
+ */
+function findKeyInGnuPG(keyId, fingerprint) {
+  if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    return { status: "disabled" };
+  }
+  if (!GPGME.init()) {
+    return { status: "unavailable" };
+  }
+
+  let keysFromGnuPGMap;
+  try {
+    keysFromGnuPGMap = GPGME.getPublicKeysForEmail(gIdentity.email);
+  } catch (ex) {
+    console.warn("Looking up the key in GnuPG failed", ex);
+    return { status: "unavailable" };
+  }
+
+  for (const [fpr, keyData] of keysFromGnuPGMap) {
+    // Accept both a full fingerprint and a key id, per normalizeKeyInput().
+    if (
+      (fingerprint && fpr.toUpperCase() == fingerprint) ||
+      normalizeKeyInput(fpr) == keyId
+    ) {
+      return { status: "found", fingerprint: fpr, keyData };
+    }
+  }
+  return { status: "not-found" };
+}
+
+/**
  * Save the GnuPG Key for the current identity and trigger a callback.
  */
-function openPgpExternalComplete() {
-  const keyId = normalizeKeyInput(document.getElementById("externalKey").value);
+async function openPgpExternalComplete() {
+  const acceptButton = kDialog.getButton("accept");
 
-  // Check if we have the public key for that, and if not, request it.
-  const keyObj = EnigmailKeyRing.getKeyById(keyId);
-  // TODO: could try to grab public key from GnuPG, similar to
-  // GPGME.getPublicKeysForEmail(email);
+  const inputValue = document.getElementById("externalKey").value;
+  const keyId = normalizeKeyInput(inputValue);
+  const fingerprint = fingerprintFromInput(inputValue);
+
+  // Check if we have the public key for that, and if not, ask GnuPG.
+  let keyObj = EnigmailKeyRing.getKeyById(keyId);
+  let gnuPgLookup;
+
+  if (!keyObj?.getUserIdWithEmail(gIdentity.email)) {
+    gnuPgLookup = findKeyInGnuPG(keyId, fingerprint);
+    if (gnuPgLookup.status == "found") {
+      // The key exists only in GnuPG. Its public part is imported into the
+      // profile ring because both signing and the own-key usability check
+      // require the public key to be available there. Keep the button
+      // disabled while that runs, so a second press cannot start a second
+      // import.
+      acceptButton.disabled = true;
+      await EnigmailKeyRing.importKeyDataSilent(
+        null,
+        gnuPgLookup.keyData,
+        false,
+        gnuPgLookup.fingerprint
+      );
+      keyObj = EnigmailKeyRing.getKeyById(keyId);
+    }
+  }
 
   if (!keyObj?.getUserIdWithEmail(gIdentity.email)) {
     document.getElementById("wizardExternalKeyProvideKeyId").hidden = true;
-    kDialog.getButton("accept").disabled = true;
+    acceptButton.disabled = true;
+
+    const gnupgUnavailable = gnuPgLookup?.status == "unavailable";
     document.l10n.setAttributes(
       document.getElementById("openpgpImportOwnPublicKey"),
-      "openpgp-import-own-key-description",
+      gnupgUnavailable
+        ? "openpgp-import-own-key-gnupg-unavailable"
+        : "openpgp-import-own-key-description",
       { keyId: `0x${keyId}` }
     );
     revealSection("openpgpImportOwnKey");
@@ -1222,5 +1299,5 @@ async function importPublicKey() {
   await EnigmailKeyRing.importKeyDataSilent(null, key.pubKey, false);
 
   kDialog.getButton("accept").disabled = false;
-  openPgpExternalComplete();
+  await openPgpExternalComplete();
 }

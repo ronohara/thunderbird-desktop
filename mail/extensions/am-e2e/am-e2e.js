@@ -238,7 +238,7 @@ async function initOpenPgpSettings() {
     "last_entered_external_gnupg_key_id"
   );
 
-  const keyCount = result.all.length + (externalKey ? 1 : 0);
+  const keyCount = countPersonalKeys(result, externalKey);
   if (keyCount) {
     document.l10n.setAttributes(
       document.getElementById("openPgpDescription"),
@@ -1069,6 +1069,22 @@ function useOpenPGPKey(keyId) {
   // Update the identity with the key obtained from the key wizard.
   gIdentity.setUnicharAttribute("openpgp_key_id", gKeyId);
 
+  if (
+    gKeyId &&
+    Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")
+  ) {
+    const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+    // A key whose secret material is not in the profile ring can only be used
+    // through GnuPG. Record it as the configured external key, so that
+    // is_gnupg_key_id below resolves to true and signing goes through GPGME.
+    if (keyObj && !keyObj.secretAvailable) {
+      gIdentity.setUnicharAttribute(
+        "last_entered_external_gnupg_key_id",
+        gKeyId
+      );
+    }
+  }
+
   // Always update the GnuPG boolean pref to be sure the currently used key is
   // internal or external.
   gIdentity.setBoolAttribute(
@@ -1078,6 +1094,29 @@ function useOpenPGPKey(keyId) {
   );
 
   reloadOpenPgpUI();
+}
+
+/**
+ * Number of personal keys for the current identity.
+ *
+ * A configured external key counts once, whether or not the profile ring also
+ * holds its public part, so the same key is never counted twice.
+ *
+ * @param {object} result - Out parameter filled by getAllSecretKeysByEmail.
+ * @param {string} externalKey - Configured external key id, or "".
+ * @returns {number} The number of personal keys.
+ */
+function countPersonalKeys(result, externalKey) {
+  let count = result.all.length;
+  if (
+    externalKey &&
+    !result.all.some(
+      key => key.keyId.toUpperCase() == externalKey.toUpperCase()
+    )
+  ) {
+    count++;
+  }
+  return count;
 }
 
 /**
@@ -1105,19 +1144,20 @@ function closeNotification() {
  * Refresh the UI on init or after a successful OpenPGP key generation.
  */
 async function reloadOpenPgpUI() {
+  // Discovery from GnuPG is cached per address for the session. A reload is
+  // the point at which a key added to the external keyring becomes visible.
+  EnigmailKeyRing.clearGnuPGCheckCache();
+
   const result = {};
   await EnigmailKeyRing.getAllSecretKeysByEmail(gIdentity.email, result, true);
-  let keyCount = result.all.length;
 
-  let externalKey = null;
+  let externalKey = "";
   if (Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
     externalKey = gIdentity.getUnicharAttribute(
       "last_entered_external_gnupg_key_id"
     );
-    if (externalKey) {
-      keyCount++;
-    }
   }
+  const keyCount = countPersonalKeys(result, externalKey);
 
   // Show the radiogroup container only if the current identity has keys.
   // But still show it if a key (missing or unusable) is configured.
@@ -1250,6 +1290,11 @@ async function reloadOpenPgpUI() {
 
   // List all the available keys.
   for (const key of result.all) {
+    if (externalKey && key.keyId.toUpperCase() == externalKey.toUpperCase()) {
+      // Already listed above as the configured external key.
+      continue;
+    }
+
     const container = document.createXULElement("vbox");
     container.id = `openPgpOption${key.keyId}`;
     container.classList.add("content-blocking-category");

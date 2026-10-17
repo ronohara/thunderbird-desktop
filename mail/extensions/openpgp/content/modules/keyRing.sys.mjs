@@ -71,6 +71,11 @@ export var EnigmailKeyRing = {
    * @returns {object[]} keys.keySortList - Key list. See {KeyList}.
    */
   getAllKeys(win, sortColumn, sortDirection) {
+    if (!gKeyListObj) {
+      // Nothing has populated the cache yet; start from an empty one rather
+      // than dereferencing null. Callers may reach this before any UI has.
+      this.clearCache();
+    }
     if (gKeyListObj.keySortList.length === 0) {
       loadKeyList(win, sortColumn, sortDirection);
     } else if (sortColumn) {
@@ -177,16 +182,122 @@ export var EnigmailKeyRing = {
 
   emailAddressesWithSecretKey: null,
 
+  /**
+   * Public keys from the external GnuPG keyring that were brought into the
+   * profile ring, so that one address is not re-read on every lookup.
+   */
+  gnuPgKeysImported: new Set(),
+
+  /**
+   * Bring the public keys for an address from the external GnuPG keyring into
+   * the profile keyring.
+   *
+   * Listing keys, signing and the own-key usability check all read the
+   * profile ring, and GnuPG exports a key's public part on request but does
+   * not put it there. Without this step a key that exists only in ~/.gnupg is
+   * invisible to every one of those paths.
+   *
+   * @param {string} emailAddr - Address to look up.
+   */
+  async _importGnuPgKeysForEmail(emailAddr) {
+    if (
+      !emailAddr ||
+      !emailAddr.includes("@") ||
+      !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") ||
+      !Services.prefs.getBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg")
+    ) {
+      return;
+    }
+    const key = emailAddr.toLowerCase();
+    if (this.gnuPgKeysImported.has(key)) {
+      return;
+    }
+    if (!lazy.GPGME.init()) {
+      return;
+    }
+
+    // Marked before importing: importKeyDataSilent() clears the key cache,
+    // which must not make this run again for the same address.
+    this.gnuPgKeysImported.add(key);
+    try {
+      const keysFromGnuPGMap = lazy.GPGME.getPublicKeysForEmail(emailAddr);
+      let imported = false;
+      for (const [fpr, keyData] of keysFromGnuPGMap) {
+        if (this.getKeyById(fpr)) {
+          continue;
+        }
+        if (await this.importKeyDataSilent(null, keyData, false, fpr)) {
+          imported = true;
+        }
+      }
+      if (imported) {
+        // importKeyDataSilent() clears the cache, and the key list is rebuilt
+        // asynchronously, so an immediate read would still see it empty.
+        await this.reloadKeyList();
+      }
+    } catch (ex) {
+      lazy.log.warn(`Importing the GnuPG key for ${emailAddr} failed`, ex);
+    }
+  },
+
+  /**
+   * Rebuild the key list from RNP and wait for it, unlike getAllKeys(), which
+   * returns whatever has been loaded so far.
+   */
+  async reloadKeyList() {
+    const keyList = await lazy.RNP.getKeys();
+    createAndSortKeyList(keyList, "", null, true);
+  },
+
+  /**
+   * Fingerprints of keys in the external GnuPG keyring that hold a secret key.
+   *
+   * @param {string} [emailAddr] - Restrict to keys with a matching user ID.
+   * @returns {?Set<string>} uppercase fingerprints, or null when external
+   *   GnuPG is not in use or unreadable.
+   */
+  _getGnuPgSecretFingerprints(emailAddr) {
+    if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+      return null;
+    }
+    if (!lazy.GPGME.init()) {
+      return null;
+    }
+    try {
+      const fprs = lazy.GPGME.getSecretKeyFingerprintsForEmail(emailAddr);
+      return new Set(fprs.map(fpr => fpr.toUpperCase()));
+    } catch (ex) {
+      lazy.log.warn("Reading secret keys from GnuPG failed", ex);
+      return null;
+    }
+  },
+
   async _populateEmailHasSecretKeyCache() {
     this.getAllKeys(); // ensure keylist is loaded;
+    const gnuPgSecretFprs = this._getGnuPgSecretFingerprints();
     const emailAddressesWithSecretKey = new Set();
+
+    // Addresses covered by a secret key in GnuPG, whether or not the public
+    // part has been imported into the profile ring yet.
+    if (Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+      try {
+        for (const key of lazy.GPGME.getSecretKeysForEmail()) {
+          for (const email of key.emails) {
+            emailAddressesWithSecretKey.add(email);
+          }
+        }
+      } catch (ex) {
+        lazy.log.warn("Reading secret keys from GnuPG failed", ex);
+      }
+    }
     for (const key of gKeyListObj.keyList) {
-      if (!key.secretAvailable) {
+      const secretInGnuPG = gnuPgSecretFprs?.has(key.fpr.toUpperCase());
+      if (!key.secretAvailable && !secretInGnuPG) {
         continue;
       }
-      const isPersonal = await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(
-        key.fpr
-      );
+      const isPersonal =
+        secretInGnuPG ||
+        (await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(key.fpr));
       if (!isPersonal) {
         continue;
       }
@@ -236,7 +347,13 @@ export var EnigmailKeyRing = {
   },
 
   async getAllSecretKeysByEmail(emailAddr, result, allowExpired) {
+    await this._importGnuPgKeysForEmail(emailAddr);
     const keyList = this.getKeysByEmail(emailAddr, true, true);
+
+    // A key whose secret material lives in the external GnuPG keyring is a
+    // secret key for this address even though only its public part has been
+    // imported into the profile ring.
+    const gnuPgSecretFprs = this._getGnuPgSecretFingerprints(emailAddr);
 
     result.all = [];
     result.best = null;
@@ -246,19 +363,26 @@ export var EnigmailKeyRing = {
     let bestIsExpired = false;
 
     for (const key of keyList) {
-      if (!key.secretAvailable) {
+      const secretInGnuPG = gnuPgSecretFprs?.has(key.fpr.toUpperCase());
+      if (!key.secretAvailable && !secretInGnuPG) {
         continue;
       }
-      const isPersonal = await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(
-        key.fpr
-      );
+      const isPersonal =
+        secretInGnuPG ||
+        (await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(key.fpr));
       if (!isPersonal) {
         continue;
       }
-      if (
-        key.getEncryptionValidity(true, "ignoreExpired").keyValid &&
-        key.getSigningValidity("ignoreExpired").keyValid
-      ) {
+      // For a key whose secret material lives in GnuPG, RNP reports the key
+      // as unusable for signing, because it cannot see that secret. Judge
+      // such a key by its public part instead: rejected keys were dropped
+      // above, and expiry is handled below.
+      const usable = secretInGnuPG
+        ? key.keyTrust != "r"
+        : key.getEncryptionValidity(true, "ignoreExpired").keyValid &&
+          key.getSigningValidity("ignoreExpired").keyValid;
+
+      if (usable) {
         const thisIsExpired =
           key.expiryTime != 0 && key.expiryTime < nowSecondsSinceEpoch;
         if (!allowExpired && thisIsExpired) {
@@ -464,6 +588,7 @@ export var EnigmailKeyRing = {
    */
   clearCache() {
     this.emailAddressesWithSecretKey = null;
+    this.clearGnuPGCheckCache();
     gKeyListObj = {
       keyList: [],
       keySortList: [],
@@ -1543,6 +1668,17 @@ export var EnigmailKeyRing = {
   },
 
   alreadyCheckedGnuPG: new Set(),
+
+  /**
+   * Forget which addresses have been checked against GnuPG, so the next key
+   * listing queries the external keyring again. Needed because the keyring is
+   * not watched for changes: a key added with gpg stays invisible otherwise
+   * until the application restarts.
+   */
+  clearGnuPGCheckCache() {
+    this.alreadyCheckedGnuPG.clear();
+    this.gnuPgKeysImported.clear();
+  },
 
   /**
    * @typedef {object} EncryptionKeyMeta

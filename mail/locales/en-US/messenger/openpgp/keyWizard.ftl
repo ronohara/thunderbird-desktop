@@ -198,4 +198,7 @@ openpgp-import-own-key-title = Import your public key
 openpgp-import-own-key-description = { -brand-short-name } couldn’t find the public key with ID { $keyId }. Please import it to continue.
 
 #   $keyId (String) - The Key ID.
+openpgp-import-own-key-gnupg-unavailable = { -brand-short-name } couldn’t read the external GnuPG keyring, so it couldn’t check the key with ID { $keyId }. Make sure GnuPG is installed and working, or import the public key from a file to continue.
+
+#   $keyId (String) - The Key ID.
 openpgp-import-keyid-failed = Could not import public key { $keyId } from that file.

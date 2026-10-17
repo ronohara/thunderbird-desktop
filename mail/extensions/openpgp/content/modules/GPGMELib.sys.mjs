@@ -145,6 +145,7 @@ const gpgme_export_mode_t = ctypes.unsigned_int;
 const gpgme_decrypt_flags_t = ctypes.unsigned_int;
 const gpgme_data_encoding_t = ctypes.unsigned_int;
 const gpgme_sig_mode_t = ctypes.int; // it's an enum, risk of wrong type.
+const gpgme_encrypt_flags_t = ctypes.unsigned_int;
 
 const _gpgme_subkey = ctypes.StructType("_gpgme_subkey");
 _gpgme_subkey.define([
@@ -378,6 +379,65 @@ function enableGPGMELibJS() {
       return resultMap;
     },
 
+    /**
+     * List keys matching the given parameters, without exporting any key
+     * material: only the fingerprint and the user IDs of each key.
+     *
+     * @param {string} pattern - A pattern given to GnuPG for listing keys.
+     * @param {boolean} secret - If true, list secret keys instead of public
+     *   keys.
+     * @param {Function} keyFilterFunction - An optional test function called
+     *   for each candidate key. Called with a {gpgme_key_t} parameter.
+     *
+     * @returns {object[]} - { fpr, emails } for each matching key.
+     */
+    listKeys(pattern, secret = false, keyFilterFunction = undefined) {
+      const keys = [];
+
+      const c1 = new gpgme_ctx_t();
+      if (this.gpgme_new(c1.address())) {
+        throw new Error("gpgme_new failed");
+      }
+
+      if (this.gpgme_op_keylist_start(c1, pattern, secret ? 1 : 0)) {
+        throw new Error("gpgme_op_keylist_start failed");
+      }
+
+      do {
+        const key = new gpgme_key_t();
+        const rv = this.gpgme_op_keylist_next(c1, key.address());
+        if (rv & GPGMELib.GPG_ERR_EOF) {
+          break;
+        } else if (rv) {
+          throw new Error("gpgme_op_keylist_next failed: " + rv);
+        }
+
+        if (key.contents.protocol == GPGMELib.GPGME_PROTOCOL_OpenPGP) {
+          if (!keyFilterFunction || keyFilterFunction(key)) {
+            const emails = [];
+            let nextUid = key.contents.uids;
+            while (nextUid && !nextUid.isNull()) {
+              const uidEmail = nextUid.contents.email;
+              if (!uidEmail.isNull()) {
+                emails.push(uidEmail.readString().toLowerCase());
+              }
+              nextUid = nextUid.contents.next;
+            }
+            keys.push({ fpr: key.contents.fpr.readString(), emails });
+          }
+        }
+        this.gpgme_key_release(key);
+        // eslint-disable-next-line no-constant-condition
+      } while (true);
+
+      if (this.gpgme_op_keylist_end(c1)) {
+        throw new Error("gpgme_op_keylist_end failed");
+      }
+
+      this.gpgme_release(c1);
+      return keys;
+    },
+
     gpgme_check_version: libgpgme.declare(
       "gpgme_check_version",
       abi,
@@ -542,6 +602,36 @@ function enableGPGMELibJS() {
       gpgme_sig_mode_t
     ),
 
+    gpgme_op_encrypt: libgpgme.declare(
+      "gpgme_op_encrypt",
+      abi,
+      gpgme_error_t,
+      gpgme_ctx_t,
+      gpgme_key_t.ptr,
+      gpgme_encrypt_flags_t,
+      gpgme_data_t,
+      gpgme_data_t
+    ),
+
+    gpgme_op_encrypt_sign: libgpgme.declare(
+      "gpgme_op_encrypt_sign",
+      abi,
+      gpgme_error_t,
+      gpgme_ctx_t,
+      gpgme_key_t.ptr,
+      gpgme_encrypt_flags_t,
+      gpgme_data_t,
+      gpgme_data_t
+    ),
+
+    gpgme_op_import: libgpgme.declare(
+      "gpgme_op_import",
+      abi,
+      gpgme_error_t,
+      gpgme_ctx_t,
+      gpgme_data_t
+    ),
+
     gpgme_signers_add: libgpgme.declare(
       "gpgme_signers_add",
       abi,
@@ -595,6 +685,8 @@ function enableGPGMELibJS() {
     GPGME_DATA_ENCODING_ARMOR: 3,
     GPGME_SIG_MODE_DETACH: 1,
     GPGME_SIG_MODE_NORMAL: 0,
+    GPGME_ENCRYPT_ALWAYS_TRUST: 1,
+    GPGME_ENCRYPT_NO_COMPRESS: 16,
 
     gpgme_key_t_revoked: 1,
     gpgme_key_t_expired: 2,

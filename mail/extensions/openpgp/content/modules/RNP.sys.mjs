@@ -213,6 +213,8 @@ export class RnpPrivateKeyUnlockTracker {
    * password cache. Will be used to look up passwords if
    * #allowAutoUnlockWithCachedPasswords is set to true. Will be used
    * to store additional passwords that are found to unlock a key.
+   *
+   * @param cacheObj
    */
   setPasswordCache(cacheObj) {
     this.#passwordCache = cacheObj;
@@ -673,6 +675,8 @@ export var RNP = {
 
   /**
    * returns {integer} - the raw value of the key's creation date
+   *
+   * @param handle
    */
   getKeyCreatedValueFromHandle(handle) {
     const key_creation = new lazy.ctypes.uint32_t();
@@ -2816,7 +2820,7 @@ export var RNP = {
       throw new Error("rnp_op_generate_set_userid failed");
     }
 
-    if (passphrase != null && passphrase.length != 0) {
+    if (passphrase != null && passphrase.length) {
       if (RNPLib.rnp_op_generate_set_protection_password(genOp, passphrase)) {
         throw new Error("rnp_op_generate_set_protection_password failed");
       }
@@ -2863,7 +2867,7 @@ export var RNP = {
       throw new Error("rnp_op_generate_subkey_create primary failed");
     }
 
-    if (passphrase != null && passphrase.length != 0) {
+    if (passphrase != null && passphrase.length) {
       if (RNPLib.rnp_op_generate_set_protection_password(genOp, passphrase)) {
         throw new Error("rnp_op_generate_set_protection_password failed");
       }
@@ -2887,7 +2891,7 @@ export var RNP = {
 
     let unlocked = false;
     try {
-      if (passphrase != null && passphrase.length != 0) {
+      if (passphrase != null && passphrase.length) {
         if (RNPLib.rnp_key_unlock(primaryKey, passphrase)) {
           throw new Error("rnp_key_unlock failed");
         }
@@ -3413,7 +3417,7 @@ export var RNP = {
         // - it contains at least one user ID
         // - it is an update for an existing key (possibly new validity/revocation)
 
-        if (k.userIds.length == 0 && !k.secretAvailable) {
+        if (!k.userIds.length && !k.secretAvailable) {
           const existingKey = await this.getKeyHandleByIdentifier(
             RNPLib.ffi,
             "0x" + k.fpr
@@ -4019,8 +4023,168 @@ export var RNP = {
     ).startsWith(armorBegin);
   },
 
+  /**
+   * Resolve the encryption recipients for the external GnuPG path.
+   *
+   * Each entry carries the fingerprint and, so that GPGME can import it when
+   * GnuPG does not hold the key, the ASCII armored public key. Alias rules
+   * take precedence over a lookup by address, as they do on the RNP path.
+   *
+   * @param {object} args - The encryption parameters.
+   * @returns {?object[]} { fpr, keyBlock } per recipient, or null when a
+   *   recipient has no usable key.
+   */
+  async getGnuPgEncryptionRecipients(args) {
+    const recipients = [];
+    const seen = new Set();
+
+    const addFingerprint = (fpr, keyBlock = "") => {
+      const normalized = fpr.toUpperCase();
+      if (seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      recipients.push({ fpr: normalized, keyBlock });
+    };
+
+    const addKeyId = id => {
+      const key = this.getKeyHandleByKeyIdOrFingerprint(RNPLib.ffi, id);
+      if (!key || key.isNull()) {
+        return false;
+      }
+      const fpr = this.getFingerprintFromHandle(key);
+      RNPLib.rnp_key_handle_destroy(key);
+      if (!fpr) {
+        return false;
+      }
+      addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+      return true;
+    };
+
+    for (const rcpList of [args.to, args.bcc]) {
+      for (let rcpEmail of rcpList) {
+        rcpEmail = rcpEmail.toLowerCase();
+        const aliasKeys = args.aliasKeys.get(
+          this.getEmailWithoutBrackets(rcpEmail)
+        );
+        if (aliasKeys) {
+          for (const ak of aliasKeys) {
+            if (!addKeyId("0x" + ak)) {
+              lazy.log.warn(`Couldn't find key used by alias rule ${ak}`);
+              return null;
+            }
+          }
+          continue;
+        }
+
+        const key = await this.findKeyByEmail(rcpEmail, true);
+        if (!key || key.isNull()) {
+          return null;
+        }
+        const fpr = this.getFingerprintFromHandle(key);
+        RNPLib.rnp_key_handle_destroy(key);
+        if (!fpr) {
+          return null;
+        }
+        addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+      }
+    }
+
+    if (args.encryptToSender) {
+      const senderKey = await this.getKeyHandleByIdentifier(
+        RNPLib.ffi,
+        args.sender
+      );
+      if (senderKey && !senderKey.isNull()) {
+        const fpr = this.getFingerprintFromHandle(senderKey);
+        RNPLib.rnp_key_handle_destroy(senderKey);
+        if (fpr) {
+          addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+        }
+      }
+    }
+
+    return recipients;
+  },
+
+  /**
+   * ASCII armored public key block for a fingerprint, taken from the
+   * profile's keyring, for import into GnuPG.
+   *
+   * @param {string} fpr - Fingerprint of the key.
+   * @returns {string} The key block, or "" when it cannot be exported.
+   */
+  exportPublicKeyBlock(fpr) {
+    try {
+      return this.getMultiplePublicKeys([fpr], null, null);
+    } catch (ex) {
+      lazy.log.warn(`Exporting public key ${fpr} for GnuPG failed`, ex);
+      return "";
+    }
+  },
+
+  /**
+   * Encrypt, and optionally sign, entirely through GnuPG. Used when the
+   * sender's key is the external GnuPG key, so that no part of the operation
+   * runs through RNP.
+   *
+   * @param {string} plaintext - The data to encrypt.
+   * @param {object} args - The encryption parameters.
+   * @param {object} resultStatus - Out parameter receiving exitCode and
+   *   statusFlags.
+   * @returns {?string} The encrypted data, or null on failure.
+   */
+  async encryptWithGnuPG(plaintext, args, resultStatus) {
+    if (!lazy.GPGME.allDependenciesLoaded()) {
+      throw new Error(
+        "invalid configuration, request to use external GnuPG key, but GPGME isn't working"
+      );
+    }
+    if (args.sigTypeClear) {
+      throw new Error(
+        "unexpected signing request with external GnuPG key configuration"
+      );
+    }
+
+    const recipients = await this.getGnuPgEncryptionRecipients(args);
+    if (!recipients) {
+      resultStatus.statusFlags |= lazy.EnigmailConstants.INVALID_RECIPIENT;
+      return null;
+    }
+
+    let signingKeyID = null;
+    if (args.sign) {
+      const senderKey = await this.getKeyHandleByIdentifier(
+        RNPLib.ffi,
+        args.sender
+      );
+      if (senderKey && !senderKey.isNull()) {
+        signingKeyID = this.findSuitableSigningKeyID(senderKey);
+        RNPLib.rnp_key_handle_destroy(senderKey);
+      }
+      if (!signingKeyID) {
+        throw new Error(
+          "no suitable signing key found for external GnuPG key " + args.sender
+        );
+      }
+      args.externalSenderSigningKeyID = signingKeyID;
+    }
+
+    return lazy.GPGME.encrypt(
+      plaintext,
+      args,
+      resultStatus,
+      recipients,
+      signingKeyID
+    );
+  },
+
   async encryptAndOrSign(plaintext, args, resultStatus) {
     let signedInner;
+
+    if (args.encrypt && args.senderKeyIsExternal) {
+      return this.encryptWithGnuPG(plaintext, args, resultStatus);
+    }
 
     if (args.sign && args.senderKeyIsExternal) {
       if (!lazy.GPGME.allDependenciesLoaded()) {
@@ -4894,6 +5058,8 @@ export var RNP = {
    *
    * The caller must ensure that the key is unprotected when calling
    * this function, and must apply the desired protection afterwards.
+   *
+   * @param tempKey
    */
   ensureECCSubkeyIsGnuPGCompatible(tempKey) {
     const algo = new lazy.ctypes.char.ptr();
