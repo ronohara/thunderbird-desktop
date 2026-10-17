@@ -10,6 +10,9 @@
 var { MailServices } = ChromeUtils.importESModule(
   "resource:///modules/MailServices.sys.mjs"
 );
+var { GnuPGAgent } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
+);
 
 var gNewAccountToLoad = null; // used to load new messages if we come from the mail3pane
 
@@ -211,5 +214,28 @@ function openKeyManager() {
       cancelCallback: null,
       okCallback: null,
     }
+  );
+}
+
+/**
+ * Ask gpg-agent to drop the passphrases it has cached.
+ *
+ * With external GnuPG keys the passphrase never reaches Thunderbird; the agent
+ * holds it in memory, so this is the only place it can be forgotten. The result
+ * is reported, because a silent success is indistinguishable from a no-op.
+ */
+async function forgetGnuPGPassphrases() {
+  const result = await GnuPGAgent.forgetCachedPassphrases();
+
+  const [title, done, failed] = await document.l10n.formatValues([
+    { id: "openpgp-forget-gnupg-passphrase-title" },
+    { id: "openpgp-forget-gnupg-passphrase-done" },
+    { id: "openpgp-forget-gnupg-passphrase-failed" },
+  ]);
+
+  Services.prompt.alert(
+    window,
+    title,
+    result.ok ? done : failed + "\n\n" + result.detail
   );
 }

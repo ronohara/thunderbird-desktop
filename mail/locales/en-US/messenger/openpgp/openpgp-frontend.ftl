@@ -6,6 +6,16 @@ openpgp-manage-keys-openpgp-cmd =
     .label = OpenPGP Key Manager
     .accesskey = O
 
+openpgp-forget-gnupg-passphrase-cmd =
+    .label = Forget GnuPG Passphrases
+    .accesskey = F
+
+openpgp-forget-gnupg-passphrase-title = Forget GnuPG Passphrases
+
+openpgp-forget-gnupg-passphrase-done = The cached GnuPG passphrases have been forgotten. The next signing or decryption operation will ask for a passphrase again.
+
+openpgp-forget-gnupg-passphrase-failed = The cached GnuPG passphrases could not be forgotten.
+
 openpgp-ctx-decrypt-open =
     .label = Decrypt and Open
     .accesskey = D

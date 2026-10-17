@@ -20,6 +20,7 @@ openpgp.jar:
   content/openpgp/modules/funcs.sys.mjs            (content/modules/funcs.sys.mjs)
   content/openpgp/modules/GPGME.sys.mjs            (content/modules/GPGME.sys.mjs)
   content/openpgp/modules/GPGMELib.sys.mjs         (content/modules/GPGMELib.sys.mjs)
+  content/openpgp/modules/gnupgAgent.sys.mjs       (content/modules/gnupgAgent.sys.mjs)
   content/openpgp/modules/key.sys.mjs              (content/modules/key.sys.mjs)
   content/openpgp/modules/keyLookupHelper.sys.mjs  (content/modules/keyLookupHelper.sys.mjs)
   content/openpgp/modules/keyObj.sys.mjs           (content/modules/keyObj.sys.mjs)
