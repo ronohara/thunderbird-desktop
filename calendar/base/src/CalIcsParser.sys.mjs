@@ -4,6 +4,7 @@
 
 import { cal } from "resource:///modules/calendar/calUtils.sys.mjs";
 import { NetUtil } from "resource://gre/modules/NetUtil.sys.mjs";
+import { previewForLog } from "resource:///modules/calendar/utils/calLogUtils.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
@@ -156,7 +157,9 @@ CalIcsParser.prototype = {
         const icalComp = cal.icsService.parseICS(aICSString);
         this.processIcalComponent(icalComp);
       } catch (exc) {
-        lazy.log.error(exc.message + " when parsing\n" + aICSString);
+        // The parser quotes the offending line in its message, so a malformed
+        // part can make this message megabytes long; bound what is logged.
+        lazy.log.error(previewForLog(`${exc.message} when parsing\n${aICSString}`));
       }
     }
   },

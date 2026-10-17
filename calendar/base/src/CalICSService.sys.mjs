@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import ICAL from "resource:///modules/calendar/Ical.sys.mjs";
+import { previewForLog } from "resource:///modules/calendar/utils/calLogUtils.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
@@ -597,7 +598,9 @@ export const CalICSService = new (class {
       listener.onParsingComplete(Cr.OK, icalComp);
     };
     worker.onerror = function (event) {
-      lazy.log.error(`Parsing failed; ${event.message}. ICS data:\n${serialized}`);
+      // event.message quotes the offending line, so it can be as large as the
+      // data that failed to parse; bound the whole message, not just the data.
+      lazy.log.error(previewForLog(`Parsing failed; ${event.message}. ICS data:\n${serialized}`));
       listener.onParsingComplete(Cr.NS_ERROR_FAILURE, null);
     };
     worker.postMessage(serialized);

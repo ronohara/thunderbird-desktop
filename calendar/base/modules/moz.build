@@ -16,6 +16,7 @@ EXTRA_JS_MODULES.calendar.utils += [
     "utils/calIteratorUtils.sys.mjs",
     "utils/calItipUtils.sys.mjs",
     "utils/calL10NUtils.sys.mjs",
+    "utils/calLogUtils.sys.mjs",
     "utils/calPrintUtils.sys.mjs",
     "utils/calProviderDetectionUtils.sys.mjs",
     "utils/calProviderUtils.sys.mjs",
