@@ -4034,13 +4034,25 @@ async function notifyIdentityCannotEncrypt(show, addr) {
  * @param {string[]} emailsWithMissing - The email addresses that prevent
  *   using encryption, because certs/keys are missing.
  */
+let gLastKeyNotificationSignature = null;
+
 async function updateKeyCertNotifications(emailsWithMissing) {
   const NOTIFICATION_NAME = "keyNotification";
 
-  const notification =
+  // The banner is not cheap to redraw and, more importantly, removing and
+  // re-adding it is visible. When the check runs again for an unchanged state
+  // — which it does whenever anything re-triggers it — leave the existing
+  // banner alone instead of making it flicker.
+  const signature = `${emailsWithMissing.join(",")}|${gSelectedTechnologyIsPGP}`;
+  const existing =
     gComposeNotification.getNotificationWithValue(NOTIFICATION_NAME);
-  if (notification) {
-    gComposeNotification.removeNotification(notification);
+  if (existing && signature === gLastKeyNotificationSignature) {
+    return;
+  }
+  gLastKeyNotificationSignature = emailsWithMissing.length ? signature : null;
+
+  if (existing) {
+    gComposeNotification.removeNotification(existing);
   }
 
   // Always refresh the pills UI.

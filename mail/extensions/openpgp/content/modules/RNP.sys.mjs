@@ -4048,6 +4048,15 @@ export var RNP = {
     };
 
     const addKeyId = id => {
+      const fromGnuPG = lazy.GPGME.getPublicKeysForId(
+        id.replace(/^0x/i, "")
+      );
+      if (fromGnuPG.size) {
+        for (const [gpgFpr, block] of fromGnuPG) {
+          addFingerprint(gpgFpr, block);
+        }
+        return true;
+      }
       const key = this.getKeyHandleByKeyIdOrFingerprint(RNPLib.ffi, id);
       if (!key || key.isNull()) {
         return false;
@@ -4077,8 +4086,22 @@ export var RNP = {
           continue;
         }
 
+        // Look in GnuPG first: on this path the recipient's key normally
+        // lives there, and only a key that exists solely in the profile ring
+        // needs the RNP store and an export.
+        const fromGnuPG = lazy.GPGME.getPublicKeysForEmail(
+          this.getEmailWithoutBrackets(rcpEmail)
+        );
+        if (fromGnuPG.size) {
+          for (const [gpgFpr, block] of fromGnuPG) {
+            addFingerprint(gpgFpr, block);
+          }
+          continue;
+        }
+
         const key = await this.findKeyByEmail(rcpEmail, true);
         if (!key || key.isNull()) {
+          lazy.log.warn(`No key found for recipient ${rcpEmail}`);
           return null;
         }
         const fpr = this.getFingerprintFromHandle(key);
@@ -4090,16 +4113,29 @@ export var RNP = {
       }
     }
 
-    if (args.encryptToSender) {
-      const senderKey = await this.getKeyHandleByIdentifier(
-        RNPLib.ffi,
-        args.sender
+    if (args.encryptToSender && args.sender) {
+      const senderEmail = this.getEmailWithoutBrackets(
+        args.sender.toLowerCase()
       );
-      if (senderKey && !senderKey.isNull()) {
-        const fpr = this.getFingerprintFromHandle(senderKey);
-        RNPLib.rnp_key_handle_destroy(senderKey);
-        if (fpr) {
-          addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+      let added = false;
+      if (senderEmail.includes("@")) {
+        const fromGnuPG = lazy.GPGME.getPublicKeysForEmail(senderEmail);
+        for (const [gpgFpr, block] of fromGnuPG) {
+          addFingerprint(gpgFpr, block);
+          added = true;
+        }
+      }
+      if (!added) {
+        const senderKey = await this.getKeyHandleByIdentifier(
+          RNPLib.ffi,
+          args.sender
+        );
+        if (senderKey && !senderKey.isNull()) {
+          const fpr = this.getFingerprintFromHandle(senderKey);
+          RNPLib.rnp_key_handle_destroy(senderKey);
+          if (fpr) {
+            addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+          }
         }
       }
     }
@@ -4149,19 +4185,20 @@ export var RNP = {
     const recipients = await this.getGnuPgEncryptionRecipients(args);
     if (!recipients) {
       resultStatus.statusFlags |= lazy.EnigmailConstants.INVALID_RECIPIENT;
+      // A numeric exit code, so the caller reports a failure instead of
+      // "FAILED: undefined".
+      resultStatus.exitCode = -1;
+      resultStatus.errorMsg = "Could not find a usable key for every recipient";
       return null;
     }
 
     let signingKeyID = null;
     if (args.sign) {
-      const senderKey = await this.getKeyHandleByIdentifier(
-        RNPLib.ffi,
-        args.sender
+      // The sender's key may exist only in GnuPG, in which case RNP holds no
+      // handle for it. Ask GnuPG which of its keys should sign.
+      signingKeyID = lazy.GPGME.getSigningKeyIdForEmail(
+        args.sender.replace(/^0x/, "").replace(/^<|>$/g, "")
       );
-      if (senderKey && !senderKey.isNull()) {
-        signingKeyID = this.findSuitableSigningKeyID(senderKey);
-        RNPLib.rnp_key_handle_destroy(senderKey);
-      }
       if (!signingKeyID) {
         throw new Error(
           "no suitable signing key found for external GnuPG key " + args.sender
@@ -4198,15 +4235,12 @@ export var RNP = {
         );
       }
 
-      const senderKey = await this.getKeyHandleByIdentifier(
-        RNPLib.ffi,
-        args.sender
+      // The sender's key may exist only in GnuPG, where RNP has no handle for
+      // it. Ask GnuPG which of its keys should sign, the same way the
+      // encrypt path does.
+      args.externalSenderSigningKeyID = lazy.GPGME.getSigningKeyIdForEmail(
+        args.sender.replace(/^0x/, "").replace(/^<|>$/g, "")
       );
-      if (senderKey && !senderKey.isNull()) {
-        args.externalSenderSigningKeyID =
-          this.findSuitableSigningKeyID(senderKey);
-        RNPLib.rnp_key_handle_destroy(senderKey);
-      }
       if (!args.externalSenderSigningKeyID) {
         throw new Error(
           "no suitable signing key found for external GnuPG key " + args.sender
@@ -5882,8 +5916,10 @@ export var RNP = {
    * @returns {string} The encoded key, or the empty string on failure.
    */
   getAutocryptKeyB64ByHandle(primHandle, subHandle, userId) {
-    if (primHandle.isNull()) {
-      throw new Error("getAutocryptKeyB64ByHandle invalid parameter");
+    if (!primHandle || primHandle.isNull()) {
+      // A key held only in GnuPG has no handle here. An Autocrypt header is
+      // optional metadata, so this must not abort the send.
+      return "";
     }
 
     const output_to_memory = new RNPLib.rnp_output_t();
@@ -5937,6 +5973,48 @@ export var RNP = {
     RNPLib.rnp_output_destroy(output_to_memory);
 
     return result;
+  },
+
+  /**
+   * Minimal Autocrypt key for a key that exists only as an armored block, such
+   * as one read from the external GnuPG keyring.
+   *
+   * Parsed into a temporary FFI context that is destroyed before returning, so
+   * the persistent keyring is untouched.
+   *
+   * @param {string} keyBlock - ASCII armored public key block.
+   * @param {string} keyId - Key id or fingerprint of the primary key.
+   * @param {string} uidString - The user ID to include.
+   * @returns {string} The base64 encoded key, or the empty string on failure.
+   */
+  getAutocryptKeyB64FromBlock(keyBlock, keyId, uidString) {
+    if (!keyBlock) {
+      return "";
+    }
+    const tempFFI = RNPLib.prepare_ffi();
+    if (!tempFFI) {
+      return "";
+    }
+    try {
+      if (this.importToFFI(tempFFI, keyBlock, true, false)) {
+        return "";
+      }
+      const primHandle = this.getKeyHandleByKeyIdOrFingerprint(tempFFI, keyId);
+      if (!primHandle || primHandle.isNull()) {
+        return "";
+      }
+      const result = this.getSuitableEncryptKeyAsAutocrypt(
+        primHandle,
+        uidString
+      );
+      RNPLib.rnp_key_handle_destroy(primHandle);
+      return result;
+    } catch (ex) {
+      lazy.log.warn(`Autocrypt export from a key block failed for ${keyId}`, ex);
+      return "";
+    } finally {
+      RNPLib.rnp_ffi_destroy(tempFFI);
+    }
   },
 
   /**
