@@ -122,6 +122,88 @@ export var GPGME = {
   },
 
   /**
+   * Public keys from GnuPG matching an identifier, without filtering by user
+   * ID. Needed when the caller has a key id rather than an address.
+   *
+   * @param {string} id - Key id or fingerprint.
+   * @returns {Map} Fingerprint -> ASCII armored public key block.
+   */
+  getPublicKeysForId(id) {
+    if (!id) {
+      return new Map();
+    }
+    return GPGMELib.exportKeys(id, false);
+  },
+
+  /**
+   * Pick the key id to sign with, from the keys GnuPG holds.
+   *
+   * A primary key that cannot sign (a certification-only key, or one whose
+   * signing subkey is the only usable one) would make gpgme_op_sign fail, so
+   * prefer a subkey that can sign and fall back to the primary key.
+   *
+   * @param {string} email - Address of the sender, or a fingerprint/key id.
+   * @returns {?string} Fingerprint of the chosen signing key, or null.
+   */
+  getSigningKeyIdForEmail(email) {
+    const wanted = email?.toLowerCase();
+    if (!wanted) {
+      return null;
+    }
+
+    // The caller may pass an address or a key id/fingerprint; only the former
+    // can be filtered by user ID, so a key id is matched after listing.
+    const isKeyId = /^(0x)?[0-9a-f]{8,64}$/i.test(email);
+    const wantedId = isKeyId ? email.replace(/^0x/i, "").toUpperCase() : null;
+
+    let keys;
+    try {
+      keys = this.getSecretKeysForEmail(isKeyId ? null : email);
+    } catch (ex) {
+      console.warn("Listing GnuPG secret keys failed", ex);
+      return null;
+    }
+
+    const usable = subkey =>
+      !(subkey.bitfield &
+        (GPGMELib.gpgme_key_t_revoked |
+          GPGMELib.gpgme_key_t_expired |
+          GPGMELib.gpgme_key_t_disabled |
+          GPGMELib.gpgme_key_t_invalid));
+
+    for (const key of keys) {
+      if (wantedId) {
+        const keyFpr = key.fpr.toUpperCase();
+        const matches =
+          keyFpr == wantedId ||
+          keyFpr.endsWith(wantedId) ||
+          key.subkeys.some(sub => sub.keyid == wantedId || sub.fpr == wantedId);
+        if (!matches) {
+          continue;
+        }
+      }
+
+      // A subkey that can sign, unless it is unusable. Newer than the primary
+      // key and, for a key with a signing subkey, the only one that can sign.
+      // gpgme lists the primary key as the first subkey entry, so skip it
+      // when looking for a signing subkey.
+      const signingSub = key.subkeys
+        .filter(sub => sub.keyid != key.keyid && sub.fpr != key.fpr)
+        .find(
+          sub => sub.bitfield & GPGMELib.gpgme_subkey_can_sign && usable(sub)
+        );
+      if (signingSub) {
+        return signingSub.keyid;
+      }
+      // No usable signing subkey: use the primary key if it can sign.
+      if (key.bitfield & GPGMELib.gpgme_key_t_can_sign && usable(key)) {
+        return key.keyid;
+      }
+    }
+    return null;
+  },
+
+  /**
    * Fingerprints of secret keys in GnuPG that match the given address, or all
    * of them when no address is given.
    *
@@ -242,11 +324,13 @@ export var GPGME = {
    * @param {string} recipient.fpr - Fingerprint or key id to look up.
    * @param {string} [recipient.keyBlock] - ASCII armored public key to
    *   import when GnuPG does not already hold the key.
+   * @param {boolean} [secret] - Request the secret key, which signing needs.
    * @returns {?object} The gpgme_key_t handle, or null.
    */
-  _getKeyHandle(ctx, { fpr, keyBlock }) {
+  _getKeyHandle(ctx, { fpr, keyBlock }, secret = false) {
+    const secretFlag = secret ? 1 : 0;
     const keyHandle = new GPGMELib.gpgme_key_t();
-    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), 0)) {
+    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), secretFlag)) {
       return keyHandle;
     }
 
@@ -273,7 +357,7 @@ export var GPGME = {
       return null;
     }
 
-    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), 0)) {
+    if (!GPGMELib.gpgme_get_key(ctx, fpr, keyHandle.address(), secretFlag)) {
       return keyHandle;
     }
     return null;
@@ -339,7 +423,7 @@ export var GPGME = {
         if (!signingKeyId) {
           throw new Error("missing signing key for encrypted and signed data");
         }
-        const signerHandle = this._getKeyHandle(ctx, { fpr: signingKeyId });
+        const signerHandle = this._getKeyHandle(ctx, { fpr: signingKeyId }, true);
         if (!signerHandle) {
           return null;
         }

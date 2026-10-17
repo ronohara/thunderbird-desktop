@@ -423,7 +423,26 @@ function enableGPGMELibJS() {
               }
               nextUid = nextUid.contents.next;
             }
-            keys.push({ fpr: key.contents.fpr.readString(), emails });
+            const subkeys = [];
+            let nextSub = key.contents.subkeys;
+            while (nextSub && !nextSub.isNull()) {
+              const subFpr = nextSub.contents.fpr;
+              subkeys.push({
+                fpr: subFpr.isNull() ? "" : subFpr.readString().toUpperCase(),
+                keyid: nextSub.contents.keyid.readString().toUpperCase(),
+                bitfield: nextSub.contents.bitfield,
+              });
+              nextSub = nextSub.contents.next;
+            }
+            const fpr = key.contents.fpr.readString().toUpperCase();
+            keys.push({
+              fpr,
+              // The low-order 64 bits of a v4 fingerprint, which is the key id.
+              keyid: fpr.slice(-16),
+              emails,
+              bitfield: key.contents.bitfield,
+              subkeys,
+            });
           }
         }
         this.gpgme_key_release(key);
@@ -688,10 +707,17 @@ function enableGPGMELibJS() {
     GPGME_ENCRYPT_ALWAYS_TRUST: 1,
     GPGME_ENCRYPT_NO_COMPRESS: 16,
 
+    // Order verified against gpgme 1.18 behaviour: an ed25519 primary that can
+    // sign and certify and holds a secret reports 224 (32 + 64 + 128), and a
+    // cv25519 encryption subkey holding a secret reports 144 (16 + 128).
     gpgme_key_t_revoked: 1,
     gpgme_key_t_expired: 2,
     gpgme_key_t_disabled: 4,
     gpgme_key_t_invalid: 8,
     gpgme_key_t_can_encrypt: 16,
+    gpgme_key_t_can_sign: 32,
+    gpgme_key_t_can_certify: 64,
+    gpgme_key_t_has_secret: 128,
+    gpgme_subkey_can_sign: 32,
   };
 }
