@@ -26,8 +26,9 @@ pref("mail.identity.default.signing_cert_name", "");
 
 pref("openpgp.loglevel", "Warn");
 
-// If true, we allow the use of GnuPG for OpenPGP secret key operations
-pref("mail.openpgp.allow_external_gnupg", false);
+// If true, we allow the use of GnuPG for OpenPGP secret key operations.
+// Enabled by default in this fork, which exists to drive the external GnuPG keyring.
+pref("mail.openpgp.allow_external_gnupg", true);
 // If allow_external_gnupg is true: Optionally use a different gpg executable
 pref("mail.openpgp.alternative_gpg_path", "");
 
@@ -43,8 +44,9 @@ pref("mail.identity.default.openpgp_key_id", "");
 pref("mail.identity.default.is_gnupg_key_id", false);
 // The hexadecimal OpenPGP key ID externally configured by GnuPG used for an identity.
 pref("mail.identity.default.last_entered_external_gnupg_key_id", "");
-// When using external GnuPG, also load public keys from GnuPG keyring
-pref("mail.openpgp.fetch_pubkeys_from_gnupg", false);
+// When using external GnuPG, also load public keys from GnuPG keyring.
+// Enabled by default in this fork, so keys in ~/.gnupg are discovered without a pref change.
+pref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
 
 // When sending an OpenPGP message that is both signed and encrypted,
 // it's possible to use one combined MIME layer, or separate layers.

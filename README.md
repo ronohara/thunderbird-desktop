@@ -1,4 +1,28 @@
 # Thunderbird
+
+**This is a personal fork of Thunderbird**, shared on GitHub as-is. It is not a maintained fork project: no ongoing rebase or merge obligation is intended. Upstream changes are not routinely merged, though security fixes may be taken selectively.
+
+## Goal
+
+Get the **external GnuPG path** working in a fork of Thunderbird: the client reads keys from `~/.gnupg`, signs/encrypts/decrypts through `gpg`, and a pinentry dialog prompts for the GnuPG passphrase — the behaviour the removed Enigmail extension used to provide.
+
+* Solve a personal issue first; the fixed source is left on GitHub for anyone to use.
+* Not running a maintained "fork project" — no ongoing rebase/merge obligation is intended.
+* Possible later: extend the same change to BetterBird; and separately address the internal RNP secret-key storage weakness.
+
+### External GnuPG preferences
+
+This fork ships two OpenPGP preferences enabled by default, so that keys in `~/.gnupg` are used without any configuration:
+
+* `mail.openpgp.allow_external_gnupg` — use GnuPG for secret key operations.
+* `mail.openpgp.fetch_pubkeys_from_gnupg` — also load public keys from the GnuPG keyring.
+
+Both are user-editable in `about:config`. A profile that already sets either of them to `false` keeps that value, because an explicit setting takes precedence over a default. **Reset** in `about:config` restores the shipped default of `true`.
+
+The one exception is a value pinned in the profile's `user.js`: that file is re-applied at every start, so Reset clears the value from `prefs.js` but the pref returns on the next launch. Edit or remove the line from `user.js` instead.
+
+---
+
 Thunderbird is a powerful and customizable open source email client with many users. It is based on the same platform that Firefox uses.
 
 ## Getting Started
