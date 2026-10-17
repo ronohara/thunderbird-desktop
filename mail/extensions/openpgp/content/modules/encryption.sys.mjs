@@ -255,6 +255,12 @@ export var EnigmailEncryption = {
     if (/^(0x)?[0-9a-f]+$/i.test(fromKeyId)) {
       // key ID specified
       foundKey = lazy.EnigmailKeyRing.getKeyById(fromKeyId);
+      if (!foundKey && isExternalGnuPG) {
+        // The key may exist only in GnuPG and not yet be loaded for this
+        // session; the listing that normally loads it may not have run.
+        await lazy.EnigmailKeyRing.loadGnuPgKeyById(fromKeyId);
+        foundKey = lazy.EnigmailKeyRing.getKeyById(fromKeyId);
+      }
     }
 
     // Even for isExternalGnuPG we require that the public key is available.
@@ -418,7 +424,9 @@ export var EnigmailEncryption = {
     if (resultStatus.exitCode === 0 && !listener.getCryptoOutputLength()) {
       resultStatus.exitCode = -1;
     }
-    return resultStatus.exitCode;
+    // Never hand back undefined: an exception on the way in leaves exitCode
+    // unset, and the caller turns that into "FAILED: undefined".
+    return typeof resultStatus.exitCode == "number" ? resultStatus.exitCode : -1;
   },
 
   encryptMessage() {

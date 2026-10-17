@@ -114,7 +114,13 @@ export var EnigmailKeyRing = {
       keyObj = gSubkeyIndex.get(keyId);
     }
 
-    return keyObj !== undefined ? keyObj : null;
+    if (keyObj !== undefined) {
+      return keyObj;
+    }
+
+    // A key that lives only in GnuPG is held transiently; it is not in the
+    // ring index, but callers such as determineOwnKeyUsability need to find it.
+    return this.getGnuPgKeyById(keyId);
   },
 
   isSubkeyId(keyId) {
@@ -183,70 +189,282 @@ export var EnigmailKeyRing = {
   emailAddressesWithSecretKey: null,
 
   /**
-   * Public keys from the external GnuPG keyring that were brought into the
-   * profile ring, so that one address is not re-read on every lookup.
+   * Keys that exist only in the external GnuPG keyring, parsed from the
+   * armored public blocks GnuPG exports.
+   *
+   * Nothing here is ever written to the profile: RNP.getKeyListFromKeyBlockImpl
+   * imports into a temporary FFI context that it destroys before returning.
+   * The parsed key objects are kept in memory for the session so that lookups
+   * do not re-parse on every keystroke, and so that the synchronous
+   * getKeyById() can find them.
+   *
+   * Keyed by fingerprint. Never holds secret material, because GnuPG is never
+   * asked for any.
    */
-  gnuPgKeysImported: new Set(),
+  gnuPgKeys: new Map(),
 
   /**
-   * Bring the public keys for an address from the external GnuPG keyring into
-   * the profile keyring.
-   *
-   * Listing keys, signing and the own-key usability check all read the
-   * profile ring, and GnuPG exports a key's public part on request but does
-   * not put it there. Without this step a key that exists only in ~/.gnupg is
-   * invisible to every one of those paths.
+   * Key id (16 hex characters) -> fingerprint, so getKeyById() can resolve a
+   * key id to a transient key without scanning.
+   */
+  gnuPgKeyIds: new Map(),
+
+  /**
+   * Fingerprint -> ASCII armored public key block, for the transient keys.
+   * Needed where a key's material is required rather than its parsed form,
+   * for example the Autocrypt header.
+   */
+  gnuPgKeyBlocks: new Map(),
+
+  /**
+   * Addresses whose GnuPG keys have already been parsed this session.
+   */
+  gnuPgLoadedFor: new Set(),
+
+  /**
+   * Parse the external GnuPG keys for an address into the session cache.
    *
    * @param {string} emailAddr - Address to look up.
+   * @returns {boolean} whether the lookup ran (not whether it found anything).
    */
-  async _importGnuPgKeysForEmail(emailAddr) {
+  async loadGnuPgKeysForEmail(emailAddr) {
     if (
       !emailAddr ||
       !emailAddr.includes("@") ||
       !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") ||
       !Services.prefs.getBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg")
     ) {
+      return false;
+    }
+
+    const key = emailAddr.toLowerCase();
+    if (this.gnuPgLoadedFor.has(key)) {
+      return true;
+    }
+    if (!lazy.GPGME.init()) {
+      return false;
+    }
+
+    // Marked before parsing: the map is consulted by getKeyById(), and a
+    // re-entrant lookup during parsing must not loop.
+    this.gnuPgLoadedFor.add(key);
+
+    let keysFromGnuPGMap;
+    try {
+      keysFromGnuPGMap = lazy.GPGME.getPublicKeysForEmail(emailAddr);
+    } catch (ex) {
+      lazy.log.warn(`Reading GnuPG keys for ${emailAddr} failed`, ex);
+      return true;
+    }
+
+    for (const [fpr, keyBlock] of keysFromGnuPGMap) {
+      const normalized = fpr.toUpperCase();
+      if (this.gnuPgKeys.has(normalized)) {
+        continue;
+      }
+      let parsed;
+      try {
+        // A temporary FFI context: destroyed inside the call, so this key is
+        // never added to RNP's own store.
+        parsed = await lazy.RNP.getKeyListFromKeyBlockImpl(keyBlock);
+      } catch (ex) {
+        lazy.log.warn(`Parsing the GnuPG key ${fpr} failed`, ex);
+        continue;
+      }
+      if (!parsed?.length) {
+        continue;
+      }
+      const keyObj = new lazy.EnigmailKeyObj(parsed[0]);
+      this.gnuPgKeys.set(normalized, keyObj);
+      this.gnuPgKeyBlocks.set(normalized, keyBlock);
+      for (const id of [keyObj.keyId, keyObj.fpr]) {
+        if (id) {
+          this.gnuPgKeyIds.set(id.toUpperCase(), normalized);
+        }
+      }
+      for (const sub of keyObj.subKeys) {
+        if (sub.keyId) {
+          this.gnuPgKeyIds.set(sub.keyId.toUpperCase(), normalized);
+        }
+      }
+      await this._autoAcceptGnuPGKey(keyObj);
+    }
+    return true;
+  },
+
+  /**
+   * Record an acceptance decision for a key that came from the user's GnuPG
+   * keyring.
+   *
+   * Thunderbird refuses to encrypt to a key until it holds an acceptance
+   * decision for it. With the external GnuPG backend the keyring itself is the
+   * trust store: the user put the key there, or their own gpg decided it was
+   * genuine. So the same trust basis applies, and a key found there is
+   * accepted as "unverified" — not "verified", which would claim a
+   * fingerprint checked in person.
+   *
+   * An existing decision is never overridden, so an explicit rejection stands.
+   *
+   * @param {EnigmailKeyObj} keyObj - The transient key.
+   */
+  async _autoAcceptGnuPGKey(keyObj) {
+    const existing = await lazy.PgpSqliteDb2.getFingerprintAcceptance(
+      null,
+      keyObj.fpr
+    );
+    if (existing) {
+      // "" means undecided-but-present; anything else is a user decision.
       return;
     }
-    const key = emailAddr.toLowerCase();
-    if (this.gnuPgKeysImported.has(key)) {
+    const emails = keyObj.userIds
+      .filter(uid => uid.type == "uid")
+      .map(uid => lazy.EnigmailFuncs.getEmailFromUserID(uid.userId))
+      .filter(email => email?.includes("@"));
+    if (!emails.length) {
+      return;
+    }
+    try {
+      await lazy.PgpSqliteDb2.updateAcceptance(
+        keyObj.fpr,
+        emails,
+        "unverified"
+      );
+    } catch (ex) {
+      lazy.log.warn(`Recording acceptance for ${keyObj.fpr} failed`, ex);
+    }
+  },
+
+  /**
+   * Parse the external GnuPG key for a key id or fingerprint into the session
+   * cache. Used when the caller has an identifier rather than an address, for
+   * example the identity's configured OpenPGP key id.
+   *
+   * @param {string} keyId - Key id or fingerprint.
+   */
+  async loadGnuPgKeyById(keyId) {
+    if (!keyId) {
+      return;
+    }
+    if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+      return;
+    }
+    if (this.getGnuPgKeyById(keyId)) {
       return;
     }
     if (!lazy.GPGME.init()) {
       return;
     }
 
-    // Marked before importing: importKeyDataSilent() clears the key cache,
-    // which must not make this run again for the same address.
-    this.gnuPgKeysImported.add(key);
+    let keys;
     try {
-      const keysFromGnuPGMap = lazy.GPGME.getPublicKeysForEmail(emailAddr);
-      let imported = false;
-      for (const [fpr, keyData] of keysFromGnuPGMap) {
-        if (this.getKeyById(fpr)) {
-          continue;
-        }
-        if (await this.importKeyDataSilent(null, keyData, false, fpr)) {
-          imported = true;
-        }
-      }
-      if (imported) {
-        // importKeyDataSilent() clears the cache, and the key list is rebuilt
-        // asynchronously, so an immediate read would still see it empty.
-        await this.reloadKeyList();
-      }
+      keys = lazy.GPGME.getPublicKeysForId(keyId.replace(/^0x/i, ""));
     } catch (ex) {
-      lazy.log.warn(`Importing the GnuPG key for ${emailAddr} failed`, ex);
+      lazy.log.warn(`Reading the GnuPG key ${keyId} failed`, ex);
+      return;
+    }
+
+    for (const [fpr, keyBlock] of keys) {
+      const normalized = fpr.toUpperCase();
+      if (this.gnuPgKeys.has(normalized)) {
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = await lazy.RNP.getKeyListFromKeyBlockImpl(keyBlock);
+      } catch (ex) {
+        lazy.log.warn(`Parsing the GnuPG key ${fpr} failed`, ex);
+        continue;
+      }
+      if (!parsed?.length) {
+        continue;
+      }
+      const keyObj = new lazy.EnigmailKeyObj(parsed[0]);
+      this.gnuPgKeys.set(normalized, keyObj);
+      for (const id of [keyObj.keyId, keyObj.fpr]) {
+        if (id) {
+          this.gnuPgKeyIds.set(id.toUpperCase(), normalized);
+        }
+      }
+      for (const sub of keyObj.subKeys) {
+        if (sub.keyId) {
+          this.gnuPgKeyIds.set(sub.keyId.toUpperCase(), normalized);
+        }
+      }
     }
   },
 
   /**
-   * Rebuild the key list from RNP and wait for it, unlike getAllKeys(), which
-   * returns whatever has been loaded so far.
+   * Keys to consider for an address: the profile ring plus the transient
+   * GnuPG keys.
+   *
+   * Every recipient check has to use this rather than getAllKeys(). Missing a
+   * path here produces a split where one screen reports the key as usable and
+   * the next step refuses to send.
+   *
+   * @param {string} emailAddr - Address whose GnuPG keys should be included.
+   * @returns {EnigmailKeyObj[]} Candidate keys, de-duplicated by fingerprint.
    */
-  async reloadKeyList() {
-    const keyList = await lazy.RNP.getKeys();
-    createAndSortKeyList(keyList, "", null, true);
+  async getCandidateKeysForEmail(emailAddr) {
+    await this.loadGnuPgKeysForEmail(emailAddr);
+    const keys = [...this.getAllKeys(null, null).keyList];
+    for (const keyObj of this.getGnuPgKeysForEmail(emailAddr)) {
+      if (!keys.some(k => k.fpr.toUpperCase() == keyObj.fpr.toUpperCase())) {
+        keys.push(keyObj);
+      }
+    }
+    return keys;
+  },
+
+  /**
+   * Transient keys from the cache that match an address.
+   *
+   * @param {string} emailAddr - Address to look up.
+   * @returns {EnigmailKeyObj[]} Matching keys, possibly empty.
+   */
+  getGnuPgKeysForEmail(emailAddr) {
+    const wanted = emailAddr?.toLowerCase();
+    if (!wanted) {
+      return [];
+    }
+    const res = [];
+    for (const key of this.gnuPgKeys.values()) {
+      if (
+        key.userIds?.some(
+          uid =>
+            uid.type == "uid" &&
+            lazy.EnigmailFuncs.getEmailFromUserID(uid.userId).toLowerCase() ==
+              wanted
+        )
+      ) {
+        res.push(key);
+      }
+    }
+    return res;
+  },
+
+  /**
+   * Look a transient GnuPG key up by key id or fingerprint.
+   *
+   * @param {string} keyId - Key id or fingerprint, optionally 0x-prefixed.
+   * @returns {?EnigmailKeyObj}
+   */
+  getGnuPgKeyById(keyId) {
+    if (!keyId) {
+      return null;
+    }
+    const id = keyId.replace(/^0x/i, "").toUpperCase();
+    const fpr = this.gnuPgKeyIds.get(id) ?? (this.gnuPgKeys.has(id) ? id : null);
+    return fpr ? (this.gnuPgKeys.get(fpr) ?? null) : null;
+  },
+
+  /**
+   * Drop the transient cache, so the next lookup re-reads GnuPG.
+   */
+  clearGnuPgKeyCache() {
+    this.gnuPgKeys.clear();
+    this.gnuPgKeyIds.clear();
+    this.gnuPgKeyBlocks.clear();
+    this.gnuPgLoadedFor.clear();
   },
 
   /**
@@ -279,7 +497,10 @@ export var EnigmailKeyRing = {
 
     // Addresses covered by a secret key in GnuPG, whether or not the public
     // part has been imported into the profile ring yet.
-    if (Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    if (
+      Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") &&
+      lazy.GPGME.init()
+    ) {
       try {
         for (const key of lazy.GPGME.getSecretKeysForEmail()) {
           for (const email of key.emails) {
@@ -347,12 +568,19 @@ export var EnigmailKeyRing = {
   },
 
   async getAllSecretKeysByEmail(emailAddr, result, allowExpired) {
-    await this._importGnuPgKeysForEmail(emailAddr);
+    await this.loadGnuPgKeysForEmail(emailAddr);
     const keyList = this.getKeysByEmail(emailAddr, true, true);
 
+    // Keys that exist only in GnuPG are held transiently, never imported, so
+    // they are not in the ring and have to be added explicitly.
+    for (const key of this.getGnuPgKeysForEmail(emailAddr)) {
+      if (!keyList.some(k => k.fpr.toUpperCase() == key.fpr.toUpperCase())) {
+        keyList.push(key);
+      }
+    }
+
     // A key whose secret material lives in the external GnuPG keyring is a
-    // secret key for this address even though only its public part has been
-    // imported into the profile ring.
+    // secret key for this address even though only its public part is known.
     const gnuPgSecretFprs = this._getGnuPgSecretFingerprints(emailAddr);
 
     result.all = [];
@@ -588,7 +816,14 @@ export var EnigmailKeyRing = {
    */
   clearCache() {
     this.emailAddressesWithSecretKey = null;
-    this.clearGnuPGCheckCache();
+    this.clearGnuPgKeyCache();
+
+    // Deliberately not clearGnuPGCheckCache(). Importing a public key ends in
+    // saveKeyRings(), which notifies "openpgp-key-change", which lands here.
+    // Clearing the "already checked" set too would make the next check import
+    // again and notify again, in a loop that redraws the composer's key
+    // banner and the key assistant without end.
+
     gKeyListObj = {
       keyList: [],
       keySortList: [],
@@ -1243,8 +1478,7 @@ export var EnigmailKeyRing = {
     var foundKeyId = null;
     var foundAcceptanceLevel = null;
 
-    const k = this.getAllKeys(null, null);
-    const keyList = k.keyList;
+    const keyList = await this.getCandidateKeysForEmail(emailAddr);
 
     for (const keyObj of keyList) {
       const acceptanceLevel = await this.isValidKeyForRecipient(
@@ -1483,8 +1717,7 @@ export var EnigmailKeyRing = {
 
     const found = [];
 
-    const k = this.getAllKeys(null, null);
-    const keyList = k.keyList;
+    const keyList = await this.getCandidateKeysForEmail(emailAddr);
 
     for (const keyObj of keyList) {
       const acceptanceLevel = await this.isValidKeyForRecipient(
@@ -1664,6 +1897,18 @@ export var EnigmailKeyRing = {
     if (!uid) {
       return null;
     }
+
+    // A key that lives only in GnuPG has no handle in RNP's store, so export
+    // it from the block that was read from GnuPG instead.
+    const gnuPgKey = this.getGnuPgKeyById(keyId);
+    if (gnuPgKey) {
+      return lazy.RNP.getAutocryptKeyB64FromBlock(
+        this.gnuPgKeyBlocks.get(gnuPgKey.fpr.toUpperCase()) ?? "",
+        keyId,
+        uid.userId
+      );
+    }
+
     return lazy.RNP.getAutocryptKeyB64(keyId, null, uid.userId);
   },
 
@@ -1677,7 +1922,6 @@ export var EnigmailKeyRing = {
    */
   clearGnuPGCheckCache() {
     this.alreadyCheckedGnuPG.clear();
-    this.gnuPgKeysImported.clear();
   },
 
   /**
@@ -1728,6 +1972,12 @@ export var EnigmailKeyRing = {
   async getEncryptionKeyMeta(email) {
     email = email.toLowerCase();
 
+    // The composer and the key assistant both come through here, and both
+    // previously saw only the profile ring, so a key that exists only in
+    // GnuPG was reported as "available but not accepted" — the collected
+    // entry — while the accepted decision written for it was never consulted.
+    await this.loadGnuPgKeysForEmail(email);
+
     const result = [];
 
     result.hasAliasRule = lazy.OpenPGPAlias.hasAliasDefinition(email);
@@ -1740,7 +1990,19 @@ export var EnigmailKeyRing = {
 
     const fingerprintsInKeyring = new Set();
 
-    for (const keyObj of this.getAllKeys(null, null).keyList) {
+    // Keys from the profile ring, plus the transient ones from GnuPG. The
+    // latter are public-only, so they take the acceptance path below rather
+    // than the personal-key path.
+    const candidateKeys = await this.getCandidateKeysForEmail(email);
+    for (const keyObj of candidateKeys) {
+      if (this.getGnuPgKeyById(keyObj.keyId)) {
+        // Track transient keys, so the collected-key block below treats them
+        // as present and does not add a second, unaccepted entry for them.
+        fingerprintsInKeyring.add(keyObj.fpr);
+      }
+    }
+
+    for (const keyObj of candidateKeys) {
       const keyMeta = {};
       keyMeta.keyObj = keyObj;
 
@@ -1856,36 +2118,10 @@ export var EnigmailKeyRing = {
       result.push(keyMeta);
     }
 
-    if (
-      Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") &&
-      Services.prefs.getBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg") &&
-      !this.alreadyCheckedGnuPG.has(email)
-    ) {
-      this.alreadyCheckedGnuPG.add(email);
-      const keysFromGnuPGMap = lazy.GPGME.getPublicKeysForEmail(email);
-      for (const aFpr of keysFromGnuPGMap.keys()) {
-        const oldKey = this.getKeyById(aFpr);
-        const gpgKeyData = keysFromGnuPGMap.get(aFpr);
-        if (oldKey) {
-          await this.importKeyDataSilent(null, gpgKeyData, false);
-        } else {
-          const k = await lazy.RNP.getKeyListFromKeyBlockImpl(gpgKeyData);
-          if (!k) {
-            continue;
-          }
-          if (k.length != 1) {
-            continue;
-          }
-          const db = await lazy.CollectedKeysDB.getInstance();
-          // If key is known in the db: merge + update.
-          const key = await db.mergeExisting(k[0], gpgKeyData, {
-            uri: "",
-            type: "gnupg",
-          });
-          await db.storeKey(key);
-        }
-      }
-    }
+    // GnuPG keys are read above, by loadGnuPgKeysForEmail(), and held
+    // transiently. There is deliberately nothing here that imports them: the
+    // whole point of the external backend is that Thunderbird's own keyring is
+    // never used for them.
 
     const collDB = await lazy.CollectedKeysDB.getInstance();
     const coll = await collDB.findKeysForEmail(email);
