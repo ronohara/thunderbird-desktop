@@ -290,6 +290,25 @@ def nsis_installer_defines(
 set_config("NSIS_INSTALLER_DEFINES", nsis_installer_defines)
 
 
+# Thunderbird GnuPG
+# =================
+#
+# Declared ahead of the profile implications below, which have to exclude this
+# variant: MOZ_APP_PROFILE is a project_flag, so every imply_option that can
+# fire has to agree, and two of them setting different values is an error.
+
+option(
+    "--enable-gnupg",
+    default=False,
+    help="Build the GnuPG variant",
+)
+
+
+@depends("--enable-gnupg", "--enable-project")
+def thunderbird_gnupg(gnupg, project):
+    return gnupg and project[0] == "comm/mail"
+
+
 # Thunderbird Enterprise
 # ======================
 
@@ -307,8 +326,8 @@ imply_option("MOZ_APP_BASENAME", "Thunderbird", when=~thunderbird_enterprise)
 
 # MOZ_APP_PROFILE: When set, used for application.ini's
 # "Profile" field, which controls profile location.
-imply_option("MOZ_APP_PROFILE", "Thunderbird", when=(target_is_windows | target_is_osx) & ~thunderbird_enterprise)
-imply_option("MOZ_APP_PROFILE", "thunderbird", when=~target_is_windows & ~target_is_osx & ~thunderbird_enterprise)
+imply_option("MOZ_APP_PROFILE", "Thunderbird", when=(target_is_windows | target_is_osx) & ~thunderbird_enterprise & ~thunderbird_gnupg)
+imply_option("MOZ_APP_PROFILE", "thunderbird", when=~target_is_windows & ~target_is_osx & ~thunderbird_enterprise & ~thunderbird_gnupg)
 
 imply_option("MOZ_APP_PROFILE", "ThunderbirdEnterprise", when=(target_is_windows | target_is_osx) & thunderbird_enterprise)
 imply_option("MOZ_APP_PROFILE", "thunderbirdenterprise", when=~target_is_windows & ~target_is_osx & thunderbird_enterprise)
@@ -320,3 +339,11 @@ imply_option(
 )
 
 imply_option("MOZ_APP_UA_NAME", "Firefox", when=thunderbird_enterprise)
+
+
+# MOZ_APP_PROFILE, for the GnuPG variant: it keeps its accounts, address books
+# and filters in a profile directory of its own, so that it can be installed
+# beside a stock Thunderbird without the two sharing one profiles.ini and
+# taking turns re-pointing its default profile.
+imply_option("MOZ_APP_PROFILE", "ThunderbirdGnuPG", when=(target_is_windows | target_is_osx) & thunderbird_gnupg)
+imply_option("MOZ_APP_PROFILE", "thunderbird-gnupg", when=~target_is_windows & ~target_is_osx & thunderbird_gnupg)
