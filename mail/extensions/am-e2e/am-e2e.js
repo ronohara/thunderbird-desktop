@@ -398,7 +398,7 @@ function gnuPgHoldsKeyForIdentity() {
     return false;
   }
   try {
-    return GPGME.getSecretKeyFingerprintsForEmail(gIdentity.email).length > 0;
+    return !!GPGME.getSecretKeyFingerprintsForEmail(gIdentity.email).length;
   } catch (ex) {
     console.warn("Reading secret keys from GnuPG failed", ex);
     return false;
@@ -441,6 +441,44 @@ async function setOpenPgpDescription(keyCount) {
   document.l10n.setAttributes(description, "openpgp-description-no-key", {
     identity: gIdentity.email,
   });
+}
+
+/**
+ * Show the notice that a secret key is stored in this profile, and hide it when
+ * none is.
+ *
+ * The condition is "a secret key exists in this profile", deliberately not "no
+ * Primary Password". A user who has set one has been told the exposure is
+ * handled, and design 1.2 shows it is not: the derivation behind that password
+ * is weak by current standards, so the key is still readable by anyone who can
+ * read the profile. The notice therefore stays while the key is there, and its
+ * wording says what reduces the risk rather than implying it removes it.
+ *
+ * A key copied into the profile from GnuPG before the import guard existed
+ * counts as internal here, and should: the statement is about where the secret
+ * material sits, and it sits in this profile.
+ */
+function updateInternalKeyNotice() {
+  const notice = document.getElementById("openPgpInternalKeyNotice");
+  const description = document.getElementById(
+    "openPgpInternalKeyNoticeDescription"
+  );
+  const manage = document.getElementById("openPgpInternalKeyNoticeManage");
+
+  EnigmailKeyRing.clearCache();
+  const internalKeys = EnigmailKeyRing.getAllKeys(null, null).keyList.filter(
+    key => key.secretAvailable
+  );
+
+  notice.collapsed = !internalKeys.length;
+  if (notice.collapsed) {
+    return;
+  }
+
+  document.l10n.setAttributes(description, "openpgp-internal-key-notice", {
+    count: internalKeys.length,
+  });
+  document.l10n.setAttributes(manage, "openpgp-internal-key-notice-manage");
 }
 
 /**
@@ -1360,6 +1398,7 @@ async function reloadOpenPgpUI() {
   document.getElementById("openPgpKeyList").hidden = keyCount == 0 && !gKeyId;
 
   await setOpenPgpDescription(keyCount);
+  updateInternalKeyNotice();
 
   const radiogroup = document.getElementById("openPgpKeyListRadio");
 

@@ -488,6 +488,110 @@ add_task(async function offer_is_reached_from_page_init() {
   }
 });
 
+/**
+ * The internal-key notice follows the presence of a secret key in the profile,
+ * not the Primary Password.
+ *
+ * That distinction is the item: a user who has set a Primary Password has been
+ * told the exposure is handled, and the design shows it is not. So the notice
+ * must stay while the key is there, and must not appear merely because no
+ * password is set.
+ */
+add_task(async function internal_key_notice_follows_the_key_not_the_password() {
+  const notice = tabDocument.getElementById("openPgpInternalKeyNotice");
+  const description = tabDocument.getElementById(
+    "openPgpInternalKeyNoticeDescription"
+  );
+
+  // No secret key in the profile: silent.
+  EnigmailKeyRing.clearCache();
+  await tabWindow.reloadOpenPgpUI();
+  Assert.equal(
+    notice.collapsed,
+    true,
+    "with no internal secret key the notice is collapsed"
+  );
+
+  // Import a secret key: the notice appears.
+  await OpenPGPTestUtils.importPrivateKey(window, getTestFile(SECRET_FILE));
+  await tabWindow.reloadOpenPgpUI();
+
+  Assert.equal(
+    notice.collapsed,
+    false,
+    "with a secret key in the profile the notice is shown"
+  );
+  Assert.equal(
+    description.dataset.l10nId,
+    "openpgp-internal-key-notice",
+    "and it uses the notice string, with the count argument"
+  );
+
+  // The Primary Password is not the condition. Its state is unchanged by this
+  // test, and the notice appeared and disappeared with the key alone.
+  const token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
+  );
+  Assert.equal(
+    token.hasPassword,
+    false,
+    "the harness runs without a Primary Password, so the notice above cannot " +
+      "have been caused by one"
+  );
+
+  // Remove the key: silent again.
+  await OpenPGPTestUtils.removeKeyById(KEY_ID.toLowerCase(), true);
+  EnigmailKeyRing.clearCache();
+  await tabWindow.reloadOpenPgpUI();
+
+  Assert.equal(
+    notice.collapsed,
+    true,
+    "removing the key collapses the notice again"
+  );
+});
+
+/**
+ * Source guard: the notice's condition must not consult the Primary Password.
+ *
+ * This exists because the behaviour test cannot distinguish the two conditions
+ * in a harness that runs without a Primary Password -- planting the wrong
+ * condition there passes, since `hasPassword` is false and the two expressions
+ * coincide. Which is exactly the bug being guarded against: the notice would
+ * disappear for a user who set a password, on the reasoning that the password
+ * solved the exposure. It does not.
+ */
+add_task(async function notice_does_not_consult_the_primary_password() {
+  const ChromeRegistry = Cc["@mozilla.org/chrome/chrome-registry;1"].getService(
+    Ci.nsIChromeRegistry
+  );
+  const file = ChromeRegistry.convertChromeURL(
+    Services.io.newURI("chrome://messenger/content/am-e2e.js")
+  ).QueryInterface(Ci.nsIFileURL).file;
+  const source = new TextDecoder().decode(await IOUtils.read(file.path));
+
+  const start = source.indexOf("function updateInternalKeyNotice(");
+  Assert.greater(start, -1, "updateInternalKeyNotice() should exist");
+
+  // The body runs to the next top-level function.
+  const rest = source.slice(start + 1);
+  const end = rest.search(/\n(?:async )?function /);
+  const body = end < 0 ? rest : rest.slice(0, end);
+
+  Assert.ok(
+    !body.includes("hasPassword"),
+    "the notice must not be conditioned on the Primary Password"
+  );
+  Assert.ok(
+    !body.includes("internalkeytoken"),
+    "and must not reach for the token to decide whether to show itself"
+  );
+  Assert.ok(
+    body.includes("secretAvailable"),
+    "its condition should be the presence of a secret key in the profile"
+  );
+});
+
 registerCleanupFunction(async function () {
   restoreGnuPG();
   document.getElementById("tabmail").closeTab(gTab);

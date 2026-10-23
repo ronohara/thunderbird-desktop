@@ -63,6 +63,28 @@
               </vbox>
             </hbox>
 
+            <!-- Shown whenever a secret key is stored in this profile, which is
+                 a different condition from "no Primary Password": a user who
+                 has set one has been told the problem is solved, and it is not.
+                 Item 19 of the plan owns this wording and state; the rules for
+                 when it re-appears belong with the rest of the nag. -->
+            <hbox id="openPgpInternalKeyNotice"
+                  class="inline-notification-container info-container"
+                  collapsed="collapsed">
+              <hbox class="inline-notification-wrapper">
+                <html:img class="notification-image"
+                          src="chrome://global/skin/icons/warning.svg"
+                          alt="" />
+                <vbox flex="1">
+                  <description id="openPgpInternalKeyNoticeDescription"/>
+                  <label is="text-link"
+                         id="openPgpInternalKeyNoticeManage"
+                         oncommand="openKeyManager();"
+                         class="learnMore"/>
+                </vbox>
+              </hbox>
+            </hbox>
+
             <hbox id="openPgpNotification"
                   class="inline-notification-container success-container"
                   collapsed="collapsed">

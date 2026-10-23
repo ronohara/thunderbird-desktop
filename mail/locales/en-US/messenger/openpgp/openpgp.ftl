@@ -399,6 +399,17 @@ openpgp-copy-cmd-label =
 #   $identity (String) - the email address of the currently selected identity
 openpgp-description-no-key = { -brand-short-name } doesn’t have a personal OpenPGP key for <b>{ $identity }</b>
 
+# Shown in Account Settings whenever a secret key is stored inside this
+# profile. The order of the sentences is deliberate and comes from the design:
+# what the exposure is, what removes it, and what only reduces it.
+#   $count (Number) - how many secret keys are stored in this profile
+openpgp-internal-key-notice = { $count ->
+    [one] A secret key is stored inside Thunderbird, in this profile. Anyone who can read this profile can use it. Moving the key to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG's.
+   *[other] { $count } secret keys are stored inside Thunderbird, in this profile. Anyone who can read this profile can use them. Moving them to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG's.
+}
+
+openpgp-internal-key-notice-manage = Open the Key Manager
+
 #   $identity (String) - the email address of the currently selected identity
 openpgp-description-gnupg-not-used = { -brand-short-name } found a GnuPG keyring holding a key for <b>{ $identity }</b>, but is not using it
 

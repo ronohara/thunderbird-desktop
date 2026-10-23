@@ -9,6 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   EnigmailConstants: "chrome://openpgp/content/modules/constants.sys.mjs",
   EnigmailFuncs: "chrome://openpgp/content/modules/funcs.sys.mjs",
   GPGME: "chrome://openpgp/content/modules/GPGME.sys.mjs",
+  GnuPGAgent: "chrome://openpgp/content/modules/gnupgAgent.sys.mjs",
   MailStringUtils: "resource:///modules/MailStringUtils.sys.mjs",
   OpenPGPMasterpass: "chrome://openpgp/content/modules/masterpass.sys.mjs",
   PgpSqliteDb2: "chrome://openpgp/content/modules/sqliteDb.sys.mjs",
@@ -336,6 +337,45 @@ export class RnpPrivateKeyUnlockTracker {
       return;
     }
 
+    // No path asks for a GnuPG passphrase.
+    //
+    // For a key whose protection lives in the external keyring, gpg-agent asks
+    // through pinentry when the key is used, and Thunderbird must never see
+    // that passphrase. A prompt raised here would be Thunderbird asking for a
+    // GnuPG key's passphrase, which is the thing this stage exists to prevent:
+    // it is what makes "unprotect with the passphrase the user just typed"
+    // possible, and that is how a key safe in ~/.gnupg acquires a second,
+    // recoverable copy in the profile.
+    //
+    // This is a mechanism rather than a rule about call sites. The check sits
+    // where the prompt would be raised, so any future caller that routes a
+    // GnuPG-held key here still cannot prompt -- the item asks for that
+    // explicitly, because the call graph will change and a convention would
+    // not survive it.
+    //
+    // It refuses rather than throws, on purpose. Decryption reaches this code
+    // with prompting allowed, and a throw would abort the decryption instead
+    // of letting librnp report "cannot decrypt" -- which is what makes the
+    // caller fall through to gpg, where the key actually lives and where no
+    // prompt is needed. The downgrade path is still closed: unprotect()
+    // requires a remembered password, so refusing to capture one makes it
+    // throw its own precondition error before anything is written.
+    if (this.#fingerprint && lazy.GPGME.init()) {
+      const held = lazy.GPGME.hasSecretKey(this.#fingerprint);
+      if (held) {
+        lazy.log.warn(
+          `Not prompting for the passphrase of ${this.#fingerprint}: the ` +
+            `external GnuPG keyring holds this key, and its passphrase is ` +
+            `gpg-agent's to ask for, never Thunderbird's.`
+        );
+        if (foundUnlocked) {
+          // Restore the state we found, as the non-prompting branch above does.
+          RNPLib.rnp_key_unlock(this.#rnpKeyHandle, autoPassword);
+        }
+        return;
+      }
+    }
+
     const promptString = await RNP.getPassphrasePrompt(this.#rnpKeyHandle, ffi);
     while (true) {
       const userFlags = { canceled: false };
@@ -596,7 +636,24 @@ export var RNP = {
         RNP.libLoaded = true;
         this.warnAboutProblematicKeys();
       }
-      await lazy.OpenPGPMasterpass.ensurePasswordIsCached();
+
+      // Only start the automatic-passphrase machinery when there is at least
+      // one secret key for it to protect.
+      //
+      // It used to run unconditionally, and the consequence was visible to any
+      // user who looked: a profile with no OpenPGP key at all still carried
+      // encrypted-openpgp-passphrase.txt, a 136-byte envelope over a locally
+      // generated secret protecting nothing. The file is created on first need
+      // by retrieveOpenPGPPassword(), which every path that actually protects
+      // a key already calls, so nothing is lost by waiting -- and the file's
+      // absence then means what it looks like.
+      //
+      // The keyring has been loaded by RNPLib.init() at this point, so this
+      // count is real rather than zero-by-not-yet-read.
+      const [protectedKeys, unprotectedKeys] = this.getProtectedKeysCount();
+      if (protectedKeys || unprotectedKeys) {
+        await lazy.OpenPGPMasterpass.ensurePasswordIsCached();
+      }
     } catch (e) {
       lazy.log.warn("Loading RNP FAILED!", e);
     }
@@ -1597,9 +1654,9 @@ export var RNP = {
    * @param {string} self_key_id - Key ID of the key that owns the user ID.
    * @param {rnp_uid_handle_t} uid_handle
    * @param {string} [userIdStr] - User ID string, used for debug logging only.
-   * @returns {object} quality
-   * @returns {boolean} quality.hasGoodSignature
-   * @returns {boolean} quality.hasWeakSignature
+   * @returns {object} quality - Result of the check.
+   * @property {boolean} quality.hasGoodSignature - A good signature was found.
+   * @property {boolean} quality.hasWeakSignature - Only a weak signature was found.
    */
   getUidSignatureQuality(self_key_id, uid_handle, userIdStr = "") {
     let hasGoodSignature = false;
@@ -1658,9 +1715,9 @@ export var RNP = {
    *
    * @param {string} keyId
    * @returns {object} revocationReason - Textual explanation for revocation.
-   * @returns {"no"|"superseded"|"compromised"|"retired"|null} revocationReason.code - Code.
-   *   See revocation_code_map.
-   * @returns {?string} revocationReason.reason
+   * @property {?string} revocationReason.code - One of "no", "superseded",
+   *   "compromised", "retired", or null. See revocation_code_map.
+   * @property {?string} revocationReason.reason - Human-readable reason.
    * @see https://www.rfc-editor.org/rfc/rfc9580.html#section-5.2.3.31
    */
   getKeyRevocationReasonByKeyId(keyId) {
@@ -1678,9 +1735,9 @@ export var RNP = {
    *
    * @param {rnp_key_handle_t} key_handle
    * @returns {?object} revocationReason - Textual explanation for revocation.
-   * @returns {"no"|"superseded"|"compromised"|"retired"|null} revocationReason.code - Code.
-   *   See revocation_code_map.
-   * @returns {?string} revocationReason.reason
+   * @property {"no"|"superseded"|"compromised"|"retired"|null} revocationReason.code
+   *   Code. See revocation_code_map.
+   * @property {?string} revocationReason.reason - Human-readable reason.
    * @see https://www.rfc-editor.org/rfc/rfc9580.html#section-5.2.3.31
    */
   getKeyRevocationReasonByKeyHandle(key_handle) {
@@ -4048,9 +4105,7 @@ export var RNP = {
     };
 
     const addKeyId = id => {
-      const fromGnuPG = lazy.GPGME.getPublicKeysForId(
-        id.replace(/^0x/i, "")
-      );
+      const fromGnuPG = lazy.GPGME.getPublicKeysForId(id.replace(/^0x/i, ""));
       if (fromGnuPG.size) {
         for (const [gpgFpr, block] of fromGnuPG) {
           addFingerprint(gpgFpr, block);
@@ -5093,7 +5148,7 @@ export var RNP = {
    * The caller must ensure that the key is unprotected when calling
    * this function, and must apply the desired protection afterwards.
    *
-   * @param tempKey
+   * @param {rnp_key_handle_t} tempKey - The key handle to modify in place.
    */
   ensureECCSubkeyIsGnuPGCompatible(tempKey) {
     const algo = new lazy.ctypes.char.ptr();
@@ -5131,6 +5186,76 @@ export var RNP = {
         throw new Error("rnp_key_25519_bits_tweak failed: " + rc);
       }
     }
+  },
+
+  /**
+   * Move a secret key out of this profile and into the external GnuPG keyring.
+   *
+   * The sequence, and each step is there for a reason:
+   *
+   * 1. Export the key re-protected with `newPassphrase`, never unprotected.
+   *    An unprotected export is the intermediate state the design exists to
+   *    avoid, even for a few seconds in memory -- so the caller chooses a real
+   *    passphrase and the exported block is never readable without one.
+   * 2. Import it into GnuPG.
+   * 3. Ask GnuPG whether it now holds the secret for that fingerprint. The
+   *    import's exit status is not enough: it reports what it did, not what the
+   *    keyring contains afterwards, and step 4 is destructive.
+   * 4. Only then offer to delete. This method does not delete: it returns what
+   *    it found so the caller can ask the user, which is the item's rule.
+   *
+   * @param {string} fpr - Fingerprint of the key to move.
+   * @param {string} newPassphrase - Passphrase the exported key is protected
+   *   with. Must not be empty.
+   * @returns {Promise<object>} { ok, stage, detail, fpr } where stage names the
+   *   step that stopped, if one did.
+   */
+  async migrateSecretKeyToGnuPG(fpr, newPassphrase) {
+    if (!fpr) {
+      return { ok: false, stage: "export", detail: "no fingerprint", fpr };
+    }
+    if (!newPassphrase) {
+      // Item 20 is explicit: an unprotected export is the state this design
+      // exists to avoid, so this is a refusal rather than a default.
+      return { ok: false, stage: "export", detail: "no passphrase", fpr };
+    }
+    let keyBlock;
+    try {
+      keyBlock = await this.backupSecretKeys([fpr], newPassphrase);
+    } catch (ex) {
+      return { ok: false, stage: "export", detail: String(ex), fpr };
+    }
+    if (!keyBlock) {
+      return {
+        ok: false,
+        stage: "export",
+        detail: "the key could not be unlocked for export",
+        fpr,
+      };
+    }
+
+    const imported = await lazy.GnuPGAgent.importKeyBlock(keyBlock);
+    if (!imported.ok) {
+      return { ok: false, stage: "import", detail: imported.output, fpr };
+    }
+
+    if (!(await lazy.GnuPGAgent.hasSecretKey(fpr))) {
+      return {
+        ok: false,
+        stage: "verify",
+        detail: "gpg did not report the key after importing it",
+        fpr,
+      };
+    }
+
+    // Deliberately not deleting. The caller asks the user, and that is the
+    // item's central rule: the move is offered, never taken.
+    return {
+      ok: true,
+      stage: "offer-delete",
+      detail: "the key is in GnuPG; the internal copy may now be removed",
+      fpr,
+    };
   },
 
   async backupSecretKeys(fprs, backupPassword) {
@@ -6010,7 +6135,10 @@ export var RNP = {
       RNPLib.rnp_key_handle_destroy(primHandle);
       return result;
     } catch (ex) {
-      lazy.log.warn(`Autocrypt export from a key block failed for ${keyId}`, ex);
+      lazy.log.warn(
+        `Autocrypt export from a key block failed for ${keyId}`,
+        ex
+      );
       return "";
     } finally {
       RNPLib.rnp_ffi_destroy(tempFFI);

@@ -424,7 +424,16 @@ add_task(async function unheld_public_block_is_written_without_secrets() {
       null
     );
 
-    const after = await ringTags("pubring.gpg");
+    // The keyring file is written asynchronously, so reading it here can see
+    // the state before the import landed. This assertion is positive, so the
+    // race showed up as an intermittent failure rather than as a false pass --
+    // which is the luckier direction, and still a defect in the test. Waited
+    // for properly, as the other files in this directory do.
+    const settled = await waitForRing(
+      snap => snap.pub.length > before.tags.length,
+      "the imported public key to land in pubring.gpg"
+    );
+    const after = { tags: settled.pub };
     Assert.greater(
       after.tags.length,
       before.tags.length,

@@ -40,6 +40,14 @@ run-if = ["nightly_build"]
 
 ["test_staleRevision.js"]
 
+["test_masterpassGate.js"]
+
+["test_migrateToGnuPG.js"]
+
+["test_stage4.js"]
+
+["test_noGnuPGPrompt.js"]
+
 ["test_secretKeys.js"]
 
 ["test_strip.js"]
