@@ -1728,21 +1728,40 @@ export var EnigmailKeyRing = {
   },
 
   /**
-   * Try to find valid key for encryption to passed email address.
+   * Every valid encryption key for one recipient, in candidate order.
+   *
+   * This used to be one key chosen by a ranking -- a fully or ultimately
+   * trusted key won immediately, otherwise the highest acceptance level won,
+   * and a tie went to whichever was encountered first. That ranking is gone.
+   * Several keys for one address is what rotation looks like, and a layer that
+   * collapses them to one makes a choice the user cannot see and cannot
+   * override.
+   *
+   * **What is kept is the acceptability threshold, not the ranking.** A key
+   * must still reach "unverified" (level 1) to be usable at all; rejected and
+   * undecided keys are excluded exactly as before. The change is that every
+   * key which clears the bar is returned, and none is preferred over another.
+   *
+   * **This is the resolution layer only.** It answers "which keys could this
+   * address be encrypted to". It does not decide which one a send uses: the
+   * encryption path resolves its own key, and for the internal engine that
+   * choice is made in RNP's `findKeyByEmail()`. That gap is recorded in Item
+   * 27's row rather than hidden here.
    *
    * @param {string} emailAddr - Email address.
-   * @param {object} details - If not null returns error in details.msg.
-   *
-   * @returns {?string} the found key ID (without leading "0x") or null.
+   * @param {object} [details] - If not null, receives msg="ProblemNoKey" when
+   *   the address has no usable key at all.
+   * @returns {Promise<string[]>} Key IDs (without leading "0x"), candidate
+   *   order preserved, no duplicates.
    */
-  async getValidKeyForRecipient(emailAddr, details) {
-    const FULLTRUSTLEVEL = 2;
-
+  async getValidKeysForRecipient(emailAddr, details) {
+    const found = [];
+    if (!emailAddr) {
+      return found;
+    }
     emailAddr = emailAddr.toLowerCase();
 
-    var foundKeyId = null;
-    var foundAcceptanceLevel = null;
-
+    const seen = new Set();
     const keyList = await this.getCandidateKeysForEmail(emailAddr);
 
     for (const keyObj of keyList) {
@@ -1752,29 +1771,19 @@ export var EnigmailKeyRing = {
         false
       );
 
-      // immediately return as best match, if a fully or ultimately
-      // trusted key is found
-      if (acceptanceLevel >= FULLTRUSTLEVEL) {
-        return keyObj.keyId;
-      }
-
+      // Below "unverified" the key is not usable for this address: rejected
+      // and undecided stay excluded, as they were before the ranking went.
       if (acceptanceLevel < 1) {
         continue;
       }
-
-      if (foundKeyId != keyObj.keyId) {
-        // different matching key found
-        if (
-          !foundKeyId ||
-          (foundKeyId && acceptanceLevel > foundAcceptanceLevel)
-        ) {
-          foundKeyId = keyObj.keyId;
-          foundAcceptanceLevel = acceptanceLevel;
-        }
+      if (seen.has(keyObj.keyId)) {
+        continue;
       }
+      seen.add(keyObj.keyId);
+      found.push(keyObj.keyId);
     }
 
-    if (!foundKeyId) {
+    if (!found.length) {
       if (details) {
         details.msg = "ProblemNoKey";
       }
@@ -1782,7 +1791,24 @@ export var EnigmailKeyRing = {
         `Found no valid encryption key with enough trust level for ${emailAddr}`
       );
     }
-    return foundKeyId;
+    return found;
+  },
+
+  /**
+   * The first valid key for an address, with no ranking applied.
+   *
+   * Kept for callers that can use only one key. "First" means first in the
+   * candidate list, which is what the previous ranking also returned for two
+   * equally acceptable keys -- the difference is that a lower-listed key no
+   * longer displaces a higher-listed one by having better acceptance.
+   *
+   * @param {string} emailAddr - Email address.
+   * @param {object} details - If not null returns error in details.msg.
+   * @returns {?string} The first valid key ID (without leading "0x") or null.
+   */
+  async getValidKeyForRecipient(emailAddr, details) {
+    const keys = await this.getValidKeysForRecipient(emailAddr, details);
+    return keys.length ? keys[0] : null;
   },
 
   getAcceptanceStringFromAcceptanceLevel(level) {
@@ -1876,14 +1902,21 @@ export var EnigmailKeyRing = {
   },
 
   /**
-   *  Determine the key ID for a set of given addresses
+   * Determine the keys for a set of given addresses.
+   *
+   * Every usable key per address is collected, not one. A recipient with two
+   * live keys -- what rotation looks like -- is reported as having two, so a
+   * caller can show which keys exist instead of being handed a choice already
+   * made on its behalf.
    *
    * @param {string[]} addresses - Email addresses
    * @param {object} details - Holds details for invalid keys.
    * @param {object} details.errArray
    * @param {object} details.errArray.addr - Email addresses.
    * @param {object} details.errArray.msg - Related error.
-   * @returns {boolean} true if at least one key missing; false otherwise.
+   * @param {object} details.keysByAddr - Filled in with address -> string[]
+   *   of usable key IDs. Absent from errArray means at least one key.
+   * @returns {boolean} true if at least one address has no usable key.
    */
   async getValidKeysForAllRecipients(addresses, details) {
     if (!addresses) {
@@ -1893,6 +1926,7 @@ export var EnigmailKeyRing = {
     let keyMissing = false;
     if (details) {
       details.errArray = [];
+      details.keysByAddr = {};
     }
     for (let i = 0; i < addresses.length; i++) {
       let addr = addresses[i];
@@ -1949,14 +1983,17 @@ export var EnigmailKeyRing = {
 
       // try email match:
       var addrErrDetails = {};
-      const foundKeyId = await this.getValidKeyForRecipient(
+      const foundKeyIds = await this.getValidKeysForRecipient(
         addr,
         addrErrDetails
       );
       if (details && addrErrDetails.msg) {
         errMsg = addrErrDetails.msg;
       }
-      if (!foundKeyId) {
+      if (details && foundKeyIds.length) {
+        details.keysByAddr[addr] = foundKeyIds;
+      }
+      if (!foundKeyIds.length) {
         // no key for this address found
         keyMissing = true;
         if (details) {

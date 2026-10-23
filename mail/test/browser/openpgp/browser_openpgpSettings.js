@@ -42,8 +42,17 @@ const { GPGME } = ChromeUtils.importESModule(
 const { EnigmailKeyRing } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/keyRing.sys.mjs"
 );
+const { RNP } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/RNP.sys.mjs"
+);
 
 const KEY_ID = "F231550C4F47E38E";
+
+// Two genuine revisions of one key, the pair Item 17 uses for the precedence
+// rule: identical fingerprint, different self-signatures.
+const REV_KEY_ID = "D4ED849BCD779DFC";
+const REV_BEFORE = "D4ED849BCD779DFC-before-new-identity.asc";
+const REV_AFTER = "D4ED849BCD779DFC-after-new-identity.asc";
 const SECRET_FILE =
   "data/keys/alice@openpgp.example-0xf231550c4f47e38e-secret.asc";
 
@@ -103,6 +112,17 @@ function stubPrompt(answers) {
     alert() {},
     QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
   };
+}
+
+/**
+ * Read a fixture as text.
+ *
+ * @param {string} name - Path relative to this test's data directory.
+ * @returns {Promise<string>} The file's contents.
+ */
+async function readFixtureText(name) {
+  const data = await IOUtils.read(getTestFile(name).path);
+  return new TextDecoder().decode(data);
 }
 
 /**
@@ -590,6 +610,434 @@ add_task(async function notice_does_not_consult_the_primary_password() {
     body.includes("secretAvailable"),
     "its condition should be the presence of a secret key in the profile"
   );
+});
+
+/**
+ * Item 31: a copy of a GnuPG key in this profile is reported, and the four
+ * files are named.
+ *
+ * The notice exists because removing only pubring.gpg looks like it worked and
+ * does not: RNPLib.loadWithFallback reads <path>.old when the main file fails,
+ * so the key returns at the next start (corrections-F50). A test that only
+ * asserted the notice appears would pass a message naming one file, which is
+ * the defect the item is about -- so the four names are asserted from the
+ * Fluent message itself rather than from the description node.
+ */
+add_task(async function duplicate_key_notice_names_four_files() {
+  const notice = tabDocument.getElementById("openPgpDuplicateKeyNotice");
+
+  // The key this profile holds, which GnuPG will be told it also holds.
+  await OpenPGPTestUtils.importPrivateKey(null, getTestFile(SECRET_FILE));
+  EnigmailKeyRing.clearCache();
+  const ringKey = EnigmailKeyRing.getKeyById(KEY_ID);
+  Assert.ok(ringKey, "the fixture key should be in the profile ring");
+  Assert.ok(ringKey.secretAvailable, "and it should carry its secret half");
+
+  stubGnuPG({ fingerprints: [ringKey.fpr] });
+  const duplicates = tabWindow.updateDuplicateKeyNotice();
+
+  Assert.equal(duplicates.size, 1, "one key should be reported as a duplicate");
+  Assert.equal(
+    notice.collapsed,
+    false,
+    "the notice should be shown when a duplicate exists"
+  );
+  Assert.equal(
+    tabDocument.getElementById("openPgpDuplicateKeyNoticeDescription").dataset
+      .l10nId,
+    "openpgp-duplicate-key-notice",
+    "the duplicate message should be selected"
+  );
+
+  // The requirement the item turns on: four files, not one.
+  const text = await tabWindow.document.l10n.formatValue(
+    "openpgp-duplicate-key-notice",
+    { count: 1 }
+  );
+  for (const name of [
+    "pubring.gpg",
+    "pubring.gpg.old",
+    "secring.gpg",
+    "secring.gpg.old",
+  ]) {
+    Assert.ok(
+      text.includes(name),
+      `the message must name ${name}, or removing the copy looks like it failed`
+    );
+  }
+
+  // It offers rather than acts: the control opens the Key Manager.
+  Assert.equal(
+    tabDocument.getElementById("openPgpDuplicateKeyNoticeManage").dataset
+      .l10nId,
+    "openpgp-duplicate-key-notice-manage",
+    "the notice should offer a route to the removal, not perform it"
+  );
+});
+
+/**
+ * The control: no duplicate, no notice.
+ *
+ * Without this task the previous one would pass on a notice that showed itself
+ * unconditionally, which is the failure mode a single-state test cannot see.
+ */
+add_task(async function notice_hidden_when_no_duplicate() {
+  const notice = tabDocument.getElementById("openPgpDuplicateKeyNotice");
+
+  // A readable keyring that holds something else.
+  stubGnuPG({ fingerprints: ["F".repeat(40)] });
+  let duplicates = tabWindow.updateDuplicateKeyNotice();
+  Assert.equal(duplicates.size, 0, "an unrelated keyring key is not a copy");
+  Assert.equal(notice.collapsed, true, "and the notice stays collapsed");
+
+  // No keyring at all.
+  stubGnuPG({ readable: false });
+  duplicates = tabWindow.updateDuplicateKeyNotice();
+  Assert.equal(
+    duplicates.size,
+    0,
+    "with no readable keyring there is nothing to compare against"
+  );
+  Assert.equal(notice.collapsed, true, "so no notice");
+});
+
+/**
+ * The notice is gated on the external path, like every other GnuPG query here.
+ *
+ * With the pref off there is no keyring in use, so a "copy" claim would be an
+ * answer invented rather than observed -- the same rule Item 19's condition
+ * follows.
+ */
+add_task(async function notice_gated_on_the_external_pref() {
+  const notice = tabDocument.getElementById("openPgpDuplicateKeyNotice");
+  const ringKey = EnigmailKeyRing.getKeyById(KEY_ID);
+  stubGnuPG({ fingerprints: [ringKey.fpr] });
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  const duplicates = tabWindow.updateDuplicateKeyNotice();
+  Assert.equal(
+    duplicates.size,
+    0,
+    "with the external path off nothing is compared and nothing is claimed"
+  );
+  Assert.equal(notice.collapsed, true, "and the notice is not shown");
+
+  await SpecialPowers.popPrefEnv();
+
+  // Restored, the same fixture reports the copy again.
+  const restored = tabWindow.updateDuplicateKeyNotice();
+  Assert.equal(
+    restored.size,
+    1,
+    "with the path back on, the duplicate is reported again"
+  );
+});
+
+/**
+ * Item 32: a copy whose revision is older than GnuPG's is reported as stale.
+ *
+ * Two genuine revisions of one key are used, the same pair Item 17 built for
+ * the precedence rule: same fingerprint, different self-signatures. The older
+ * one goes into the profile ring and the newer one is what GnuPG answers with,
+ * which is the 18 October shape rather than a marker object standing in for it.
+ *
+ * The stale message is a different message from Item 31's, because it says a
+ * different thing: not "a copy exists" but "the copy is out of date".
+ */
+add_task(async function stale_copy_is_reported_as_stale() {
+  const before = await readFixtureText("data/keys/" + REV_BEFORE);
+  const after = await readFixtureText("data/keys/" + REV_AFTER);
+
+  // The older revision into the profile ring, with the guard's pref off so the
+  // planted copy is possible at all -- the guards are Item 8 and Item 10's
+  // subject, and here the copy is the point.
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  await EnigmailKeyRing.importKeyAsync(
+    null,
+    false,
+    before,
+    false,
+    "",
+    {},
+    null
+  );
+  EnigmailKeyRing.clearCache();
+
+  const ringKey = EnigmailKeyRing.getKeyById(REV_KEY_ID);
+  Assert.ok(ringKey, "the older revision should be in the profile ring");
+
+  // The measurements the notice will make, taken here so a wrong answer is
+  // attributable rather than hidden behind the notice.
+  const ringTime = RNP.newestSelfSignatureTimeInProfile(ringKey.fpr);
+  const gnuPgTime = RNP.newestSelfSignatureTimeForKeyBlock(after, ringKey.fpr);
+  Assert.greater(ringTime, 0, "the profile copy's newest self-signature reads");
+  Assert.greater(gnuPgTime, 0, "and so does GnuPG's revision's");
+  Assert.less(
+    ringTime,
+    gnuPgTime,
+    "the fixture must be stale, or this task proves nothing"
+  );
+
+  // Now the notice, with GnuPG answering as it would if it held the newer one.
+  await SpecialPowers.popPrefEnv();
+  stubGnuPG({ fingerprints: [ringKey.fpr] });
+  const gOriginalExport = GPGME.getPublicKeysForId;
+  GPGME.getPublicKeysForId = () =>
+    new Map([[ringKey.fpr.toUpperCase(), after]]);
+  try {
+    const duplicates = tabWindow.updateDuplicateKeyNotice();
+    Assert.equal(duplicates.size, 1, "the copy is still a duplicate");
+
+    Assert.equal(
+      tabDocument.getElementById("openPgpDuplicateKeyNoticeDescription").dataset
+        .l10nId,
+      "openpgp-stale-key-copy-notice",
+      "a stale copy earns the stronger message, not the plain one"
+    );
+  } finally {
+    GPGME.getPublicKeysForId = gOriginalExport;
+    restoreGnuPG();
+  }
+});
+
+/**
+ * The control: a copy whose revision matches GnuPG's is not called stale.
+ *
+ * Without this, the task above would pass on a check that called every
+ * duplicate stale -- which is the failure mode of a comparison that never
+ * evaluates to "not stale".
+ */
+add_task(async function current_copy_is_not_called_stale() {
+  const after = await readFixtureText("data/keys/" + REV_AFTER);
+
+  // Actually replace the ring copy with the newer revision, so the two stores
+  // agree. The first version of this task only re-read the fixture and then
+  // asserted "not stale" against a ring that still held the older one -- it
+  // failed, correctly, and the failure is why the copy is now replaced.
+  EnigmailKeyRing.clearCache();
+  const stale = EnigmailKeyRing.getKeyById(REV_KEY_ID);
+  Assert.ok(stale, "the older revision should still be present to replace");
+  await RNP.deleteKey(stale.fpr, false);
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  await EnigmailKeyRing.importKeyAsync(null, false, after, false, "", {}, null);
+  await SpecialPowers.popPrefEnv();
+  EnigmailKeyRing.clearCache();
+
+  const ringKey = EnigmailKeyRing.getKeyById(REV_KEY_ID);
+  Assert.ok(ringKey, "the newer revision should now be in the ring");
+
+  stubGnuPG({ fingerprints: [ringKey.fpr] });
+  const gOriginalExport = GPGME.getPublicKeysForId;
+  GPGME.getPublicKeysForId = () =>
+    new Map([[ringKey.fpr.toUpperCase(), after]]);
+  try {
+    tabWindow.updateDuplicateKeyNotice();
+    Assert.equal(
+      tabDocument.getElementById("openPgpDuplicateKeyNoticeDescription").dataset
+        .l10nId,
+      "openpgp-duplicate-key-notice",
+      "a copy that is current earns the plain duplicate message"
+    );
+  } finally {
+    GPGME.getPublicKeysForId = gOriginalExport;
+    restoreGnuPG();
+  }
+});
+
+/**
+ * Item 35, Stage 7's verification: three profile states, three answers.
+ *
+ * Each state is built deliberately and both notices are read together, so a
+ * notice that fires on a state it does not describe is as visible as one that
+ * fails to fire. Reading one notice at a time cannot see that, which is why the
+ * earlier tests -- each about a single notice -- passed while two of them could
+ * show at once.
+ *
+ *   state 1  a copy of a key GnuPG also holds, secret half present
+ *            -> the duplicate message, and the internal-store message silent
+ *   state 2  a key that exists only in the profile
+ *            -> the internal-store message, and no duplicate message
+ *   state 3  no secret key in the profile at all
+ *            -> both silent
+ *
+ * **The stale variant of state 1 has no fixture and is verified elsewhere.**
+ * The two-revision pair Item 17 built is public-only, so a key with a secret
+ * half cannot be given two revisions here. Whether the stale message is the one
+ * selected is Item 32's own test, `stale_copy_is_reported_as_stale`, which uses
+ * that pair; what this task adds is that a *secret* copy does not make the
+ * internal-store notice speak as well.
+ */
+
+const ALICE_PUB = "data/keys/alice@openpgp.example-0xf231550c4f47e38e-pub.asc";
+
+/** Read both notices at once. */
+function readNotices() {
+  const internal = tabDocument.getElementById("openPgpInternalKeyNotice");
+  const duplicate = tabDocument.getElementById("openPgpDuplicateKeyNotice");
+  const id = name => tabDocument.getElementById(name)?.dataset.l10nId || null;
+  return {
+    internalShown: !internal.collapsed,
+    internalMessage: id("openPgpInternalKeyNoticeDescription"),
+    duplicateShown: !duplicate.collapsed,
+    duplicateMessage: id("openPgpDuplicateKeyNoticeDescription"),
+  };
+}
+
+/** Remove every key from the profile ring, so a state starts from nothing. */
+async function clearProfileRing() {
+  EnigmailKeyRing.clearCache();
+  for (const key of EnigmailKeyRing.getAllKeys(null, null).keyList.slice()) {
+    // secretAvailable, not true: rnp_key_remove refuses to remove a secret
+    // that is not there, so the flag has to describe the key.
+    await RNP.deleteKey(key.fpr, key.secretAvailable);
+  }
+  EnigmailKeyRing.clearCache();
+  await tabWindow.reloadOpenPgpUI();
+}
+
+/**
+ * Put a key with a secret half into the profile ring.
+ *
+ * The guard's pref is turned off for the import because a secret key is what
+ * this state needs; the guards themselves are Items 8 and 10's subject, and
+ * here the copy is the point.
+ *
+ * @returns {Promise<object>} The ring key.
+ */
+async function importSecretIntoRing() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  await OpenPGPTestUtils.importPrivateKey(window, getTestFile(SECRET_FILE));
+  await SpecialPowers.popPrefEnv();
+  EnigmailKeyRing.clearCache();
+
+  const ringKey = EnigmailKeyRing.getKeyById(KEY_ID);
+  Assert.ok(ringKey, "the fixture should be in the ring");
+  Assert.ok(
+    ringKey.secretAvailable,
+    "and it must carry its secret half, or the internal notice cannot fire"
+  );
+  return ringKey;
+}
+
+/**
+ * State 1: the profile holds a copy of a key GnuPG also holds.
+ *
+ * The duplicate notice speaks, and the internal-store notice must stay quiet.
+ * It must stay quiet because its advice -- "moving the key to GnuPG removes
+ * that exposure" -- cannot be followed for a key GnuPG already holds, and it
+ * contradicts the other notice's "delete the four files". Two notices with
+ * incompatible remedies are worse than one.
+ */
+add_task(async function state1_copy_of_held_key_speaks_once() {
+  await clearProfileRing();
+  const ringKey = await importSecretIntoRing();
+  const publicBlock = await readFixtureText(ALICE_PUB);
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ fingerprints: [ringKey.fpr] });
+  const gOriginalExport = GPGME.getPublicKeysForId;
+  GPGME.getPublicKeysForId = () =>
+    new Map([[ringKey.fpr.toUpperCase(), publicBlock]]);
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    const notices = readNotices();
+
+    Assert.equal(
+      notices.duplicateShown,
+      true,
+      "the duplicate notice should be shown for a copy GnuPG also holds"
+    );
+    Assert.equal(
+      notices.duplicateMessage,
+      "openpgp-duplicate-key-notice",
+      "and it should carry the duplicate message: the revisions agree"
+    );
+    Assert.equal(
+      notices.internalShown,
+      false,
+      "the internal-store notice must stay silent, because its remedy is already true"
+    );
+  } finally {
+    GPGME.getPublicKeysForId = gOriginalExport;
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * State 2: the key exists only in the profile.
+ *
+ * This is the state Item 19's notice is about -- a key stored inside
+ * Thunderbird with no keyring behind it -- so it fires, and the duplicate
+ * notice has nothing to say because there is no duplicate.
+ */
+add_task(async function state2_profile_only_key_speaks_once() {
+  await clearProfileRing();
+  await importSecretIntoRing();
+
+  // GnuPG holds something else entirely, so this key is not a copy of anything.
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ fingerprints: ["A".repeat(40)] });
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    const notices = readNotices();
+
+    Assert.equal(
+      notices.internalShown,
+      true,
+      "a key that exists only in the profile is what the internal notice is for"
+    );
+    Assert.equal(
+      notices.internalMessage,
+      "openpgp-internal-key-notice",
+      "and it carries the internal-store message"
+    );
+    Assert.equal(
+      notices.duplicateShown,
+      false,
+      "with no duplicate there is nothing for the duplicate notice to report"
+    );
+  } finally {
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * State 3: no secret key in the profile.
+ *
+ * The control for the two above, and the one that catches a notice which shows
+ * itself regardless of state.
+ */
+add_task(async function state3_no_copy_says_nothing() {
+  await clearProfileRing();
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ fingerprints: ["B".repeat(40)] });
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    const notices = readNotices();
+
+    Assert.equal(notices.internalShown, false, "no key, no internal notice");
+    Assert.equal(notices.duplicateShown, false, "no copy, no duplicate notice");
+  } finally {
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
 });
 
 registerCleanupFunction(async function () {

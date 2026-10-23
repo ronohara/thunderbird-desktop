@@ -611,6 +611,17 @@ function enableGPGMELibJS() {
       gpgme_data_encoding_t
     ),
 
+    // Text for an error code, as gpgme words it. Returns a static string, so
+    // there is nothing to free. Bound because a bare numeric code is not
+    // something a user can act on: "No pinentry" says what to fix, and 85 does
+    // not. Item 24 measured that the code itself was being discarded entirely.
+    gpgme_strerror: libgpgme.declare(
+      "gpgme_strerror",
+      abi,
+      ctypes.char.ptr,
+      gpgme_error_t
+    ),
+
     gpgme_op_sign: libgpgme.declare(
       "gpgme_op_sign",
       abi,

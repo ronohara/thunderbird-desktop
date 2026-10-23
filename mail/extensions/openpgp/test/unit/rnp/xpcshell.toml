@@ -28,6 +28,8 @@ skip-if = ["os != 'linux'"]
 
 # ML-KEM requires the experimental RNP library, which is only
 # distributed in nightly builds.
+["test_passphraseCacheNote.js"]
+
 ["test_pqcSubkey.js"]
 run-if = ["nightly_build"]
 
@@ -38,6 +40,11 @@ run-if = ["nightly_build"]
 ["test_importPackets.js"]
 
 ["test_keySelectionDelegation.js"]
+skip-if = ["os != 'linux'"]
+
+["test_multiKeyRecipient.js"]
+
+["test_stage6.js"]
 skip-if = ["os != 'linux'"]
 
 ["test_keyPrecedence.js"]

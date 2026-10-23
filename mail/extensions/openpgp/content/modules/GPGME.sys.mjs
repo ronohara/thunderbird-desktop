@@ -43,6 +43,56 @@ export var GPGME = {
   },
 
   /**
+   * gpgme's own wording for an error code.
+   *
+   * gpgme returns a packed number, and a number tells a user nothing. The
+   * string behind it does: "No pinentry" names the missing thing, and
+   * "Unusable public key" names the key problem. Item 24 measured that the
+   * code was being dropped entirely on every failure path, so a failed send
+   * arrived as an unexplained failure. This is the function that turns it back
+   * into something a person can act on.
+   *
+   * Never throws: a failure to describe a failure must not replace it, so an
+   * unusable library falls back to the number.
+   *
+   * @param {number} code - gpgme_error_t as returned by an operation.
+   * @returns {string} The reason, or the numeric code when it cannot be read.
+   */
+  strerror(code) {
+    const numeric = Number(code);
+    if (!numeric) {
+      return "";
+    }
+    try {
+      if (!GPGME.init() || !GPGMELib.gpgme_strerror) {
+        return `gpgme error ${numeric}`;
+      }
+      const text = GPGMELib.gpgme_strerror(numeric);
+      const reason = text?.isNull?.() ? "" : text.readString();
+      return reason || `gpgme error ${numeric}`;
+    } catch (ex) {
+      return `gpgme error ${numeric}`;
+    }
+  },
+
+  /**
+   * Record a gpgme failure where the caller will see it.
+   *
+   * Both the number and the words, because the number is what a bug report
+   * needs and the words are what the user needs.
+   *
+   * @param {object} resultStatus - Out parameter of the calling operation.
+   * @param {number} code - gpgme_error_t.
+   */
+  recordGpgmeFailure(resultStatus, code) {
+    if (!resultStatus) {
+      return;
+    }
+    resultStatus.exitCode = Number(code) || -1;
+    resultStatus.errorMsg = this.strerror(code);
+  },
+
+  /**
    * High level interface to retrieve public keys from GnuPG that
    * contain a user ID that matches the given email address.
    *
@@ -654,6 +704,9 @@ export var GPGME = {
 
       if (exitCode != GPGMELib.GPG_ERR_NO_ERROR) {
         GPGMELib.gpgme_data_release(data_ciphertext);
+        // Before Item 28 this returned null and the code was lost, so a
+        // failed encryption reached the composer as an unexplained failure.
+        this.recordGpgmeFailure(resultStatus, exitCode);
         return null;
       }
 
@@ -760,6 +813,7 @@ export var GPGME = {
             );
             if (exitCode != GPGMELib.GPG_ERR_NO_ERROR) {
               GPGMELib.gpgme_data_release(data_signed);
+              this.recordGpgmeFailure(resultStatus, exitCode);
             } else {
               const result_len = new lazy.ctypes.size_t();
               const result_buf = GPGMELib.gpgme_data_release_and_get_mem(
@@ -835,6 +889,7 @@ export var GPGME = {
             );
             if (exitCode != GPGMELib.GPG_ERR_NO_ERROR) {
               GPGMELib.gpgme_data_release(data_signed);
+              this.recordGpgmeFailure(resultStatus, exitCode);
             } else {
               const result_len = new lazy.ctypes.size_t();
               const result_buf = GPGMELib.gpgme_data_release_and_get_mem(

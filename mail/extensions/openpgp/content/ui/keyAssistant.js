@@ -17,6 +17,7 @@ var { XPCOMUtils } = ChromeUtils.importESModule(
 
 ChromeUtils.defineESModuleGetters(this, {
   EnigmailKeyRing: "chrome://openpgp/content/modules/keyRing.sys.mjs",
+  GPGME: "chrome://openpgp/content/modules/GPGME.sys.mjs",
   KeyLookupHelper: "chrome://openpgp/content/modules/keyLookupHelper.sys.mjs",
   OpenPGPAlias: "chrome://openpgp/content/modules/OpenPGPAlias.sys.mjs",
   PgpSqliteDb2: "chrome://openpgp/content/modules/sqliteDb.sys.mjs",
@@ -26,6 +27,15 @@ ChromeUtils.defineESModuleGetters(this, {
 });
 var { EnigmailWindows } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/windows.sys.mjs"
+);
+// Imported directly rather than through defineESModuleGetters above. A lazy
+// getter for this name made the whole script fail to load in the composer --
+// gKeyAssistant came out undefined and every caller threw -- which the FIXME
+// above records as a known conflict between the two import styles. Nothing
+// else in this window defines the name, so the direct import is the working
+// form rather than a workaround for a collision.
+var { GnuPGAgent } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
 );
 
 window.addEventListener("load", () => {
@@ -178,11 +188,120 @@ var gKeyAssistant = {
   problematicKeys: 0,
 
   /**
+   * Name the key that will sign, before the message is sent.
+   *
+   * With the external keyring the choice is GnuPG's: it applies the configured
+   * default key, or falls back to the first usable key in its own order.
+   * Reporting that choice is the whole point -- a user cannot verify a
+   * decision they cannot see, and the previous behaviour made it silently.
+   *
+   * Shown only when the external path is actually going to be used. For an
+   * internal key the identity names it and the acceptance UI already shows it,
+   * so a second line saying the same thing would be noise.
+   */
+  async fillSigningKey() {
+    const section = document.getElementById("keyAssistantSigningKey");
+    const value = document.getElementById("keyAssistantSigningKeyValue");
+    const source = document.getElementById("keyAssistantSigningKeySource");
+    section.hidden = true;
+
+    const identity = gCurrentIdentity;
+    if (!identity?.email || !GPGME.init()) {
+      return;
+    }
+    if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+      return;
+    }
+
+    let chosen = null;
+    try {
+      chosen = await GPGME.resolveSigningKeyForIdentity(identity.email);
+    } catch (ex) {
+      console.warn("Resolving the signing key for display failed", ex);
+      return;
+    }
+    if (!chosen?.fpr) {
+      return;
+    }
+
+    document.l10n.setAttributes(
+      value,
+      "openpgp-key-assistant-signing-key-value",
+      {
+        fingerprint: chosen.fpr,
+      }
+    );
+    document.l10n.setAttributes(
+      source,
+      chosen.source == "default-key"
+        ? "openpgp-key-assistant-signing-key-source-default"
+        : "openpgp-key-assistant-signing-key-source-gnupg-order"
+    );
+
+    await this.fillPassphraseCacheNote();
+
+    section.hidden = false;
+  },
+
+  /**
+   * Say how long gpg-agent will keep the passphrase after signing.
+   *
+   * A user who signs twice sees a pinentry the first time and none the second,
+   * and the obvious reading of that is that the second signature did not
+   * prompt because it was not needed. It was needed; the agent remembered it.
+   * Saying so, with the durations read from the agent's own configuration,
+   * turns a mystery into a stated property -- and names the menu item that
+   * clears it.
+   *
+   * **Two numbers, not one, and the difference is the honest part.** The idle
+   * timer resets on every use, so the maximum is what bounds the exposure, and
+   * a message quoting only the first would understate it.
+   *
+   * **The residual risk is stated rather than implied.** While the agent holds
+   * the passphrase, any program running as the same user can use the key
+   * without being asked. That is how gpg-agent works; this build does not fix
+   * it and must not read as though it does.
+   *
+   * Silent when the agent cannot be asked. A duration invented here would be
+   * the number a user relied on, which is worse than no number at all.
+   */
+  async fillPassphraseCacheNote() {
+    const note = document.getElementById("keyAssistantSigningKeyCache");
+    if (!note) {
+      return;
+    }
+    note.hidden = true;
+
+    let timeouts = null;
+    try {
+      timeouts = await GnuPGAgent.cacheTimeouts();
+    } catch (ex) {
+      console.warn("Reading gpg-agent's cache timeouts failed", ex);
+      return;
+    }
+    if (!timeouts?.maximum) {
+      return;
+    }
+
+    document.l10n.setAttributes(
+      note,
+      "openpgp-key-assistant-passphrase-cached",
+      {
+        idle: Math.round(timeouts.idle / 60),
+        maximum: Math.round(timeouts.maximum / 60),
+      }
+    );
+    note.hidden = false;
+  },
+
+  /**
    * Populate the main view of the key assistant with the list of recipients and
    * its keys, separating the recipients that have issues from those without
    * issues.
    */
   async buildMainView() {
+    await this.fillSigningKey();
+
     // Restore empty UI state.
     document.getElementById("keyAssistantIssues").hidden = true;
     document.getElementById("keysListIssues").replaceChildren();

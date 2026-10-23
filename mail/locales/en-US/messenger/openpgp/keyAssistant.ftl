@@ -158,3 +158,25 @@ openpgp-key-assistant-confirm-button = Send Encrypted
 # Variables:
 # $date (String) - The key creation date.
 openpgp-key-assistant-key-created = created on { $date }
+
+## Signing key
+
+openpgp-key-assistant-signing-key-header = This message will be signed
+
+# Variables:
+# $fingerprint (String) - Fingerprint of the key that will sign.
+openpgp-key-assistant-signing-key-value = Key { $fingerprint }
+
+# The rule GnuPG used to choose it. Reported rather than assumed, because with
+# the external keyring the choice is GnuPG's, not Thunderbird's.
+openpgp-key-assistant-signing-key-source-default = Chosen because it is your configured default signing key.
+openpgp-key-assistant-signing-key-source-gnupg-order = Chosen by GnuPG: the first usable signing key for this identity.
+
+# Shown under the signing key. Both numbers are read from gpg-agent's own
+# configuration; the second is the one that bounds the exposure, because the
+# first timer restarts on every use.
+#
+# Variables:
+#   $idle (Number) - minutes gpg-agent keeps a passphrase after it is last used
+#   $maximum (Number) - minutes at most, regardless of use
+openpgp-key-assistant-passphrase-cached = After you sign, GnuPG keeps your passphrase for { $idle } minutes, or up to { $maximum } minutes if you keep signing. While it is held, any program running as you can use your key without being asked. Tools → Forget GnuPG Passphrases clears it now.

@@ -465,9 +465,27 @@ function updateInternalKeyNotice() {
   );
   const manage = document.getElementById("openPgpInternalKeyNoticeManage");
 
+  // A key GnuPG also holds is not an *internal* key, and must not be counted
+  // here. This notice advises moving the key to GnuPG, which for such a key has
+  // already happened; the duplicate notice beside it says to delete the four
+  // keyring files instead. Leaving both up gives the user two incompatible
+  // remedies for one situation, and the wrong one is the more prominent.
+  //
+  // Measured 2026-10-24 by Item 35's three-state verification: with a secret
+  // copy of a held key in the profile, both notices appeared and the internal
+  // one told the user to move a key that was already in GnuPG. The test
+  // asserting both notices at once is what caught it -- reading each notice on
+  // its own could not.
+  //
+  // With the external path switched off there is no keyring to compare
+  // against, so every secret key in the profile is genuinely internal and
+  // duplicateKeyFingerprints() returns nothing. That is the intended reading,
+  // not a hole.
+  const duplicates = duplicateKeyFingerprints();
+
   EnigmailKeyRing.clearCache();
   const internalKeys = EnigmailKeyRing.getAllKeys(null, null).keyList.filter(
-    key => key.secretAvailable
+    key => key.secretAvailable && !duplicates.has(key.fpr?.toUpperCase() ?? "")
   );
 
   notice.collapsed = !internalKeys.length;
@@ -479,6 +497,152 @@ function updateInternalKeyNotice() {
     count: internalKeys.length,
   });
   document.l10n.setAttributes(manage, "openpgp-internal-key-notice-manage");
+}
+
+/**
+ * Fingerprints in the profile ring that GnuPG also holds.
+ *
+ * The population issue 1.5 is about: a copy of a key that lives in the
+ * keyring. Read-only, and deliberately narrow -- it answers "which of these
+ * two stores contain the same key", not "is the copy stale", because a stale
+ * copy is Item 32 and detecting it needs both revisions compared.
+ *
+ * Gated on the external path being usable, for the same reason the import
+ * guard is: with no GnuPG to compare against there is no copy to report, and
+ * asking would be an answer invented rather than observed.
+ *
+ * @returns {Map<string, object>} Uppercase fingerprint -> the profile key
+ *   object, for fingerprints present in both stores.
+ */
+function duplicateKeyFingerprints() {
+  const duplicates = new Map();
+  // Same condition the rest of this file uses before asking GnuPG anything:
+  // the pref on and the library loadable. `externalGnuPGUsable()` lives in
+  // keyRing.sys.mjs, which is a module this classic script does not reach.
+  if (
+    !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") ||
+    !GPGME.init()
+  ) {
+    return duplicates;
+  }
+
+  EnigmailKeyRing.clearCache();
+  let gnuPgFprs;
+  try {
+    gnuPgFprs = new Set(GPGME.getSecretKeyFingerprintsForEmail(null));
+  } catch (ex) {
+    console.warn(
+      "Listing GnuPG secret keys for the duplicate check failed",
+      ex
+    );
+    return duplicates;
+  }
+  if (!gnuPgFprs.size) {
+    return duplicates;
+  }
+
+  for (const key of EnigmailKeyRing.getAllKeys(null, null).keyList) {
+    const fpr = key.fpr?.toUpperCase();
+    if (fpr && gnuPgFprs.has(fpr)) {
+      duplicates.set(fpr, key);
+    }
+  }
+  return duplicates;
+}
+
+/**
+ * Of the duplicated keys, which copies are older than GnuPG's revision.
+ *
+ * Item 31 answers "a copy exists"; this answers "and it is out of date", which
+ * is a different fact and the one that produced the false expiry report. The
+ * revision is the newest self-signature, measured the same way on both sides
+ * by RNP.newestSelfSignatureTime() and its key-block twin, so the two numbers
+ * are comparable by construction rather than by hope.
+ *
+ * A copy is reported stale only when both times are known and the profile's is
+ * strictly older. If either measurement fails -- a key GnuPG will not export, a
+ * signature librnp cannot read -- the copy is not called stale. A failure to
+ * measure must never be reported as evidence, which is the direction that
+ * would send a user to delete a key on the strength of a broken probe.
+ *
+ * @param {Map<string, object>} duplicates - From duplicateKeyFingerprints().
+ * @returns {Map<string, object>} Fingerprint -> { ringTime, gnuPgTime }.
+ */
+function staleKeyCopies(duplicates) {
+  const stale = new Map();
+  if (!duplicates?.size) {
+    return stale;
+  }
+
+  for (const fpr of duplicates.keys()) {
+    let gnuPgBlock;
+    try {
+      gnuPgBlock = GPGME.getPublicKeysForId(fpr).get(fpr);
+    } catch (ex) {
+      console.warn("Exporting a GnuPG key for the staleness check failed", ex);
+      continue;
+    }
+    if (!gnuPgBlock) {
+      continue;
+    }
+
+    const gnuPgTime = RNP.newestSelfSignatureTimeForKeyBlock(gnuPgBlock, fpr);
+    const ringTime = RNP.newestSelfSignatureTimeInProfile(fpr);
+    if (!gnuPgTime || !ringTime) {
+      continue;
+    }
+    if (ringTime < gnuPgTime) {
+      stale.set(fpr, { ringTime, gnuPgTime });
+    }
+  }
+  return stale;
+}
+
+/**
+ * Tell the user when the profile holds a copy of a key GnuPG also holds.
+ *
+ * Names all four keyring files, not one, and that is the substance of the
+ * notice rather than a detail of it: RNPLib.loadWithFallback reads
+ * <path>.old when the main file fails, so removing only pubring.gpg restores
+ * the key at the next start (corrections-F50). A user who deletes one file,
+ * sees the key come back, and concludes the removal did not work has been
+ * told something false by an incomplete instruction.
+ *
+ * The notice offers rather than acts. Removing a key from a profile is
+ * destructive and irreversible for that profile, so the control opens the Key
+ * Manager, where the removal already lives and where the user can see what
+ * they are removing.
+ *
+ * @returns {Map<string, object>} The duplicates found, so a caller or a test
+ *   can assert on the same answer the notice was built from.
+ */
+function updateDuplicateKeyNotice() {
+  const notice = document.getElementById("openPgpDuplicateKeyNotice");
+  const description = document.getElementById(
+    "openPgpDuplicateKeyNoticeDescription"
+  );
+  const manage = document.getElementById("openPgpDuplicateKeyNoticeManage");
+
+  const duplicates = duplicateKeyFingerprints();
+
+  notice.collapsed = !duplicates.size;
+  if (notice.collapsed) {
+    return duplicates;
+  }
+
+  // One notice, two messages. A stale copy is a duplicate that also needs the
+  // stronger sentence, and showing both notices at once would say the same
+  // thing twice in different words.
+  const stale = staleKeyCopies(duplicates);
+  document.l10n.setAttributes(
+    description,
+    stale.size
+      ? "openpgp-stale-key-copy-notice"
+      : "openpgp-duplicate-key-notice",
+    { count: duplicates.size, stale: stale.size }
+  );
+  document.l10n.setAttributes(manage, "openpgp-duplicate-key-notice-manage");
+  return duplicates;
 }
 
 /**
@@ -1399,6 +1563,7 @@ async function reloadOpenPgpUI() {
 
   await setOpenPgpDescription(keyCount);
   updateInternalKeyNotice();
+  updateDuplicateKeyNotice();
 
   const radiogroup = document.getElementById("openPgpKeyListRadio");
 

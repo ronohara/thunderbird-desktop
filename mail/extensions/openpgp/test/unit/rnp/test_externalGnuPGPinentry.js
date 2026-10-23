@@ -283,11 +283,10 @@ add_task(
     // signing path never installs one: it hands the request to gpg-agent
     // and waits for the answer. The wait is what fails here.
     //
-    // The caught message is printed rather than asserted on. Today it is
-    // generic, because GPGME.signDetached() drops the code that gpgme
-    // returned, so the reason the user sees is not the reason gpg gave.
-    // Asserting the generic text would freeze that; asserting the real
-    // text would fail until the code is fixed.
+    // Until Item 28 this message could not be asserted on: GPGME.signDetached()
+    // dropped gpgme's return code, so the caller saw an unexplained failure.
+    // The code and gpg's own wording are now recorded, which is why the reason
+    // is asserted below rather than printed and ignored.
     let error = null;
     try {
       await RNP.encryptAndOrSign(PLAINTEXT, args, resultStatus);
@@ -304,6 +303,32 @@ add_task(
       resultStatus.statusFlags & EnigmailConstants.SIG_CREATED,
       0,
       "no signature should have been created"
+    );
+
+    // Item 28: the reason reaches the caller. gpg itself reported "No pinentry"
+    // here, and a message that says only "signDetached failed" would throw away
+    // the one piece of information that tells a user what to fix.
+    Assert.ok(
+      resultStatus.errorMsg,
+      "the failure must carry gpg's own reason, not just a code"
+    );
+    Assert.ok(
+      /pinentry/i.test(resultStatus.errorMsg),
+      `the reason should name the missing pinentry, got: ${resultStatus.errorMsg}`
+    );
+    Assert.equal(
+      typeof resultStatus.exitCode,
+      "number",
+      "a numeric exit code should be reported, not the -1 placeholder"
+    );
+    Assert.notEqual(
+      resultStatus.exitCode,
+      0,
+      "the code should record a failure"
+    );
+    Assert.ok(
+      error.message.includes(resultStatus.errorMsg),
+      "the thrown error should carry the same reason as resultStatus"
     );
   }
 );

@@ -192,6 +192,58 @@ export var GnuPGAgent = {
   },
 
   /**
+   * Read one option from gpg-agent's own configuration.
+   *
+   * A separate call from `configuredOption`, which reads gpg's file: the cache
+   * timeouts live in the agent's, and the two are different programs with
+   * different option sets. Same output shape, so the parsing is shared.
+   *
+   * @param {string} name - Option name, for example "default-cache-ttl".
+   * @returns {Promise<string>} The configured value, or "" when unset.
+   */
+  async configuredAgentOption(name) {
+    const result = await this._run("gpgconf", ["--list-options", "gpg-agent"]);
+    if (!result.ok) {
+      return "";
+    }
+    for (const line of result.output.split("\n")) {
+      if (!line.startsWith(`${name}:`)) {
+        continue;
+      }
+      const fields = line.split(":");
+      return (fields[fields.length - 1] ?? "").replace(/^"|"$/g, "");
+    }
+    return "";
+  },
+
+  /**
+   * How long gpg-agent keeps a passphrase, in seconds.
+   *
+   * Read from the agent rather than assumed, because these are per-machine
+   * settings and a user who has changed them should be told their own numbers.
+   * The distinction between the two is the point of reporting both: the timer
+   * resets on each use until the maximum is reached, so a passphrase can sit
+   * in memory for far longer than the first figure suggests.
+   *
+   * Returns nulls when the agent cannot be asked. A caller must then say
+   * nothing rather than inventing a duration -- a wrong number here would be
+   * worse than no number, because it is the number a user would rely on.
+   *
+   * @returns {Promise<{idle: ?number, maximum: ?number}>} Seconds, or nulls.
+   */
+  async cacheTimeouts() {
+    const toSeconds = value => {
+      const n = Number.parseInt(value, 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const [idle, maximum] = await Promise.all([
+      this.configuredAgentOption("default-cache-ttl"),
+      this.configuredAgentOption("max-cache-ttl"),
+    ]);
+    return { idle: toSeconds(idle), maximum: toSeconds(maximum) };
+  },
+
+  /**
    * The key gpg has been configured to sign with, when the user has set one.
    *
    * @returns {Promise<string>} The `default-key` value, or "".

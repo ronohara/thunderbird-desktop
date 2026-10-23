@@ -1094,6 +1094,181 @@ export var RNP = {
     return this.getPrimaryKeyHandleFromSub(ffi, handle);
   },
 
+  /**
+   * Creation time of the newest self-signature on a key.
+   *
+   * A key's revision is its signatures, not its fingerprint. Two copies of one
+   * key can agree on the fingerprint and disagree about expiry, user IDs or
+   * capabilities, because one was taken before the owner last changed them --
+   * which is the 18 October shape exactly. The newest self-signature is what
+   * separates the revisions, and comparing it between two stores is how a
+   * stale copy is told from a current one.
+   *
+   * A self-signature is one whose signer is the key itself: the key ID is the
+   * low 64 bits of the fingerprint, for every version this build accepts.
+   * Signatures from other people are certifications, and a newer third-party
+   * signature does not make the key a newer revision of itself, so they are
+   * skipped.
+   *
+   * Returns 0 rather than throwing when a signature cannot be read. A caller
+   * comparing two times must treat 0 as "unknown" and say nothing, because a
+   * failure to measure must never be reported as evidence that a copy is old.
+   *
+   * @param {object} ffi - The librnp FFI holding the key.
+   * @param {string} fpr - Fingerprint, with or without "0x".
+   * @returns {number} Seconds since the epoch, or 0 when it cannot be read.
+   */
+  newestSelfSignatureTime(ffi, fpr) {
+    const bare = String(fpr || "").replace(/^0x/i, "");
+    if (!bare) {
+      return 0;
+    }
+    const selfKeyId = bare.slice(-16).toUpperCase();
+
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(ffi, "0x" + bare);
+    if (!handle || handle.isNull()) {
+      return 0;
+    }
+
+    let newest = 0;
+    const consider = sigHandle => {
+      const sigId = new lazy.ctypes.char.ptr();
+      if (RNPLib.rnp_signature_get_keyid(sigHandle, sigId.address())) {
+        return;
+      }
+      const signer = sigId.isNull() ? "" : sigId.readString().toUpperCase();
+      if (!sigId.isNull()) {
+        RNPLib.rnp_buffer_destroy(sigId);
+      }
+      if (signer != selfKeyId && !selfKeyId.endsWith(signer)) {
+        // Not a self-signature: a certification by somebody else says nothing
+        // about which revision of the key this is.
+        return;
+      }
+      const creation = new lazy.ctypes.uint32_t();
+      if (RNPLib.rnp_signature_get_creation(sigHandle, creation.address())) {
+        return;
+      }
+      if (creation.value > newest) {
+        newest = creation.value;
+      }
+    };
+
+    try {
+      // Signatures attached to the key itself: direct-key and revocations.
+      const keySigCount = new lazy.ctypes.size_t();
+      if (!RNPLib.rnp_key_get_signature_count(handle, keySigCount.address())) {
+        for (let i = 0; i < keySigCount.value; i++) {
+          const sigHandle = new RNPLib.rnp_signature_handle_t();
+          if (
+            !RNPLib.rnp_key_get_signature_at(handle, i, sigHandle.address())
+          ) {
+            consider(sigHandle);
+            RNPLib.rnp_signature_handle_destroy(sigHandle);
+          }
+        }
+      }
+
+      // And the ones that matter most in practice: each user ID carries its
+      // own self-signature, which is where an expiry change is recorded.
+      const uidCount = new lazy.ctypes.size_t();
+      if (!RNPLib.rnp_key_get_uid_count(handle, uidCount.address())) {
+        for (let u = 0; u < uidCount.value; u++) {
+          const uidHandle = new RNPLib.rnp_uid_handle_t();
+          if (
+            RNPLib.rnp_key_get_uid_handle_at(handle, u, uidHandle.address())
+          ) {
+            continue;
+          }
+          // The uid variants, not the key ones. rnp_key_get_signature_count
+          // and rnp_uid_get_signature_count are different entry points taking
+          // different handles, and most keys carry no direct-key signature at
+          // all: their self-signatures live on the user IDs. Using the key
+          // function here returned zero for every key, which read as "no
+          // revision" rather than as an error -- found by the test asserting
+          // the fixture really is stale rather than trusting the comparison.
+          const uidSigCount = new lazy.ctypes.size_t();
+          if (
+            !RNPLib.rnp_uid_get_signature_count(
+              uidHandle,
+              uidSigCount.address()
+            )
+          ) {
+            for (let i = 0; i < uidSigCount.value; i++) {
+              const sigHandle = new RNPLib.rnp_signature_handle_t();
+              if (
+                RNPLib.rnp_uid_get_signature_at(
+                  uidHandle,
+                  i,
+                  sigHandle.address()
+                )
+              ) {
+                continue;
+              }
+              consider(sigHandle);
+              RNPLib.rnp_signature_handle_destroy(sigHandle);
+            }
+          }
+          RNPLib.rnp_uid_handle_destroy(uidHandle);
+        }
+      }
+    } finally {
+      RNPLib.rnp_key_handle_destroy(handle);
+    }
+
+    return newest;
+  },
+
+  /**
+   * The same measurement, for a key in the profile store.
+   *
+   * A convenience rather than a second implementation: callers outside this
+   * module have no handle on the librnp FFI, and passing one around would
+   * spread that detail for no benefit.
+   *
+   * @param {string} fpr - Fingerprint, with or without "0x".
+   * @returns {number} Seconds since the epoch, or 0 when it cannot be read.
+   */
+  newestSelfSignatureTimeInProfile(fpr) {
+    try {
+      return this.newestSelfSignatureTime(RNPLib.ffi, fpr);
+    } catch (ex) {
+      lazy.log.warn("Reading a key's newest self-signature failed", ex);
+      return 0;
+    }
+  },
+
+  /**
+   * The same measurement, for a key that is not in the profile store.
+   *
+   * Used to ask what revision GnuPG holds without importing it: the block is
+   * parsed into a throwaway FFI, measured, and the FFI destroyed. Nothing is
+   * written to either store, which is the property Item 10 exists to protect.
+   *
+   * @param {string} keyBlockStr - Armored public key block.
+   * @param {string} fpr - Fingerprint of the key to measure.
+   * @returns {number} Seconds since the epoch, or 0.
+   */
+  newestSelfSignatureTimeForKeyBlock(keyBlockStr, fpr) {
+    if (!keyBlockStr) {
+      return 0;
+    }
+    const tempFFI = RNPLib.prepare_ffi();
+    if (!tempFFI) {
+      return 0;
+    }
+    let time = 0;
+    try {
+      // importToFFI returns 0 on success.
+      if (this.importToFFI(tempFFI, keyBlockStr, true, false) === 0) {
+        time = this.newestSelfSignatureTime(tempFFI, fpr);
+      }
+    } finally {
+      RNPLib.rnp_ffi_destroy(tempFFI);
+    }
+    return time;
+  },
+
   hasKeyWeakSelfSignature(selfId, handle) {
     const sig_count = new lazy.ctypes.size_t();
     if (RNPLib.rnp_key_get_signature_count(handle, sig_count.address())) {
@@ -4150,6 +4325,23 @@ export var RNP = {
    * @param {object} resultStatus - Out parameter of encryptAndOrSign.
    * @param {object} used - { signingKey, recipients }, either may be absent.
    */
+  /**
+   * An error message that carries gpg's own reason.
+   *
+   * Item 28 bound gpgme_strerror so the reason exists at all; an error that
+   * says only "GPGME.signDetached failed" throws that away again. Kept as a
+   * helper rather than inline so the call sites stay one line and the
+   * surrounding function's complexity does not creep up.
+   *
+   * @param {string} what - Operation name, for the leading part.
+   * @param {object} resultStatus - The operation's out parameter.
+   * @returns {string} The message.
+   */
+  gpgmeFailure(what, resultStatus) {
+    const reason = resultStatus?.errorMsg;
+    return reason ? `${what} failed: ${reason}` : `${what} failed`;
+  },
+
   recordEngineReadBack(resultStatus, used) {
     if (!resultStatus || typeof resultStatus != "object") {
       return;
@@ -4345,6 +4537,21 @@ export var RNP = {
       signingKey?.keyId ?? null
     );
     this.recordEngineReadBack(resultStatus, { signingKey, recipients });
+
+    // Item 28: a refusal must name whom it is about. gpg's wording says what
+    // went wrong and not which address it was for, which is ambiguous the
+    // moment a message has more than one recipient -- so the addresses are
+    // added here, where the send knows them.
+    if (!result && resultStatus.errorMsg) {
+      const addresses = [...(args.to || []), ...(args.bcc || [])]
+        .map(r => this.getEmailWithoutBrackets(String(r).toLowerCase()).trim())
+        .filter(a => a.includes("@"));
+      if (addresses.length) {
+        resultStatus.errorMsg = `${resultStatus.errorMsg} (recipients: ${addresses.join(
+          ", "
+        )})`;
+      }
+    }
     return result;
   },
 
@@ -4389,7 +4596,7 @@ export var RNP = {
         args.encrypt = false;
         signedInner = await lazy.GPGME.sign(plaintext, args, resultStatus);
         if (!signedInner) {
-          throw new Error("GPGME.sign failed");
+          throw new Error(this.gpgmeFailure("GPGME.sign", resultStatus));
         }
         this.recordEngineReadBack(resultStatus, { signingKey });
         // Despite our request to produce binary data, GPGME.sign might
@@ -4412,7 +4619,9 @@ export var RNP = {
         // After the call, because signDetached resets resultStatus.
         this.recordEngineReadBack(resultStatus, { signingKey });
         if (!signResult) {
-          throw new Error("GPGME.signDetached failed");
+          throw new Error(
+            this.gpgmeFailure("GPGME.signDetached", resultStatus)
+          );
         }
         return signResult;
       }

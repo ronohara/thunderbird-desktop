@@ -197,6 +197,7 @@ add_task(async function recipient_checks_resolve_through_one_function() {
 
   for (const name of [
     "getEncryptionKeyMeta",
+    "getValidKeysForRecipient",
     "getValidKeyForRecipient",
     "getValidKeysForAllRecipients",
   ]) {
@@ -209,13 +210,16 @@ add_task(async function recipient_checks_resolve_through_one_function() {
     const body = end < 0 ? rest : rest.slice(0, end);
 
     // Routing counts whether it is direct or by delegation.
-    // getValidKeysForAllRecipients() calls getValidKeyForRecipient() once per
-    // address rather than the shared function itself, which reaches the same
-    // place through one more step and keeps the per-address logic in one
-    // function. Requiring the direct call would have failed a correct design.
+    // getValidKeysForAllRecipients() calls the resolver once per address
+    // rather than the shared function itself, which reaches the same place
+    // through one more step and keeps the per-address logic in one function.
+    // Requiring the direct call would have failed a correct design. Since Item
+    // 27 the resolver is getValidKeysForRecipient() -- the plural -- and
+    // getValidKeyForRecipient() delegates to it, so both names count.
     Assert.ok(
       body.includes("getCandidateKeysForEmail(") ||
-        body.includes("getValidKeyForRecipient("),
+        body.includes("getValidKeyForRecipient(") ||
+        body.includes("getValidKeysForRecipient("),
       `${name}() must resolve through getCandidateKeysForEmail(), directly or by delegation`
     );
     Assert.ok(

@@ -404,11 +404,39 @@ openpgp-description-no-key = { -brand-short-name } doesn’t have a personal Ope
 # what the exposure is, what removes it, and what only reduces it.
 #   $count (Number) - how many secret keys are stored in this profile
 openpgp-internal-key-notice = { $count ->
-    [one] A secret key is stored inside Thunderbird, in this profile. Anyone who can read this profile can use it. Moving the key to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG's.
-   *[other] { $count } secret keys are stored inside Thunderbird, in this profile. Anyone who can read this profile can use them. Moving them to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG's.
+    [one] A secret key is stored inside Thunderbird, in this profile. Anyone who can read this profile can use it. Moving the key to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG’s.
+   *[other] { $count } secret keys are stored inside Thunderbird, in this profile. Anyone who can read this profile can use them. Moving them to GnuPG removes that exposure; setting a Primary Password makes it harder but does not remove it, because the protection behind that password is weaker than GnuPG’s.
 }
 
 openpgp-internal-key-notice-manage = Open the Key Manager
+
+# Shown when the profile holds a copy of a key that GnuPG also holds.
+#
+# Variables:
+#   $count (Number) - how many duplicated keys were found
+#
+# All four file names are part of the message rather than a detail: RNPLib
+# reads <name>.old when the main file fails, so removing only the first
+# restores the key at the next start.
+openpgp-duplicate-key-notice = { $count ->
+    [one] A copy of one of your GnuPG keys is stored in this profile. The copy is not needed, and it can outrank the live key in your keyring. Removing it means deleting all four files: pubring.gpg, pubring.gpg.old, secring.gpg and secring.gpg.old — deleting only the first lets the second bring the key back.
+   *[other] Copies of { $count } of your GnuPG keys are stored in this profile. The copies are not needed, and they can outrank the live keys in your keyring. Removing them means deleting all four files: pubring.gpg, pubring.gpg.old, secring.gpg and secring.gpg.old — deleting only the first lets the second bring the keys back.
+}
+
+openpgp-duplicate-key-notice-manage = Open the Key Manager
+
+# Shown instead of the message above when the profile's copy is older than the
+# key in the keyring -- the state that produced a false expiry report. Under
+# the precedence rule the live key wins, so this is information rather than a
+# warning, and it exists so the user learns the copy is there at all.
+#
+# Variables:
+#   $stale (Number) - how many of the duplicated copies are out of date
+#
+openpgp-stale-key-copy-notice = { $stale ->
+    [one] A copy of one of your GnuPG keys in this profile is out of date, and can report the wrong expiry or the wrong details. GnuPG’s version is the one in use. Removing the copy means deleting all four files: pubring.gpg, pubring.gpg.old, secring.gpg and secring.gpg.old — deleting only the first lets the second bring the key back.
+   *[other] Copies of { $stale } of your GnuPG keys in this profile are out of date, and can report the wrong expiry or the wrong details. GnuPG’s versions are the ones in use. Removing the copies means deleting all four files: pubring.gpg, pubring.gpg.old, secring.gpg and secring.gpg.old — deleting only the first lets the second bring the keys back.
+}
 
 #   $identity (String) - the email address of the currently selected identity
 openpgp-description-gnupg-not-used = { -brand-short-name } found a GnuPG keyring holding a key for <b>{ $identity }</b>, but is not using it

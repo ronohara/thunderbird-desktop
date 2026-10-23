@@ -63,6 +63,19 @@
       <!-- Notifications will be lazily loaded here. -->
     </div>
 
+    <!--
+      The key that will sign. Shown before the send, because a user cannot
+      verify a choice they cannot see, and with the external keyring the
+      choice is GnuPG's rather than one Thunderbird made and can explain.
+    -->
+    <section id="keyAssistantSigningKey" hidden="hidden">
+      <p class="font-bold"
+         data-l10n-id="openpgp-key-assistant-signing-key-header"/>
+      <p id="keyAssistantSigningKeyValue"></p>
+      <p id="keyAssistantSigningKeySource" class="tip-caption"></p>
+      <p id="keyAssistantSigningKeyCache" class="tip-caption"></p>
+    </section>
+
     <!-- Issues section. -->
     <section id="keyAssistantIssues" hidden="hidden">
       <p id="keyAssistantIssuesHeader" class="font-bold"
