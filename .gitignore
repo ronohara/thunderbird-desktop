@@ -82,3 +82,6 @@ rust/ms_graph_tb/ms_graph_tb_extract/target/
 
 # Ignore Zed editor configuration files.
 .zed/
+
+# Ignore the local agent working directory.
+/.codewhale/

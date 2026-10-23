@@ -51,6 +51,22 @@ var gAllData = "";
 var gGeneratedKey = null;
 var gFiles;
 
+/**
+ * The GnuPG key the wizard offers, when the identity it was opened for has one
+ * in the external keyring and has not chosen a key itself.
+ *
+ * Set on init by preselectGnuPGKeyIfAvailable(), consumed by
+ * wizardExternalKey() when it fills in the key field. Null when there is
+ * nothing to offer, which is the ordinary case for most identities.
+ *
+ * The identity key it was found for is part of the value rather than implied:
+ * the menulist in the wizard can change the identity, and a suggestion that
+ * belonged to the previous one must not be applied to the new one.
+ *
+ * @type {?{ identityKey: string, keyId: string }}
+ */
+var gSuggestedGnuPgKey = null;
+
 const DEFAULT_FILE_PERMS = 0o600;
 
 var syncl10n = new Localization(["messenger/openpgp/keyWizard.ftl"], true);
@@ -79,6 +95,12 @@ async function initKeyWiz() {
     document.getElementById("externalKey").addEventListener("input", event => {
       kDialog.getButton("accept").disabled = !event.target.checkValidity();
     });
+
+    // A key already in GnuPG makes the external path the default choice. This
+    // runs after the radio is shown so the selection is made on a visible
+    // control, and before the isCreate/isImport shortcuts below, which set the
+    // radio themselves when the dialog was opened for one of those purposes.
+    await preselectGnuPGKeyIfAvailable();
   }
 
   // After the dialog is visible, disable the event listeners causing it to
@@ -176,6 +198,85 @@ async function initIdentity() {
   }
 
   await setIdentity();
+}
+
+/**
+ * Preselect the GnuPG path when the keyring holds a key for this identity.
+ *
+ * A new identity with a key already in GnuPG should start on the external
+ * path, because that is the key its owner already trusts and the one this build
+ * exists to use. The other two choices stay on screen and stay selectable: the
+ * internal engine is offered, never assumed, and the asymmetry between the two
+ * is deliberate. An identity that already has a key configured is left alone
+ * entirely -- which key signs is a decision the user has made, and opening the
+ * wizard again is not a reason to revisit it.
+ *
+ * The selected key is the same one the account settings offer (Item 2): the
+ * newest non-expired key GnuPG holds for the address. Expired keys are skipped
+ * because a preselected key that cannot sign would fail at the first send,
+ * which is the worst moment to discover it.
+ *
+ * Nothing here writes to the identity. The choice becomes real only when the
+ * user continues through the external section and the dialog is accepted, so
+ * cancelling the wizard leaves the identity exactly as it was.
+ *
+ * @returns {Promise<void>}
+ */
+async function preselectGnuPGKeyIfAvailable() {
+  gSuggestedGnuPgKey = null;
+
+  if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    return;
+  }
+  if (!gIdentity?.email) {
+    return;
+  }
+  // An identity that already uses a key keeps it. The wizard is not a place to
+  // change which key signs by accident.
+  if (gIdentity.getUnicharAttribute("openpgp_key_id")) {
+    return;
+  }
+  if (!GPGME.init()) {
+    return;
+  }
+
+  let gnuPgFprs;
+  try {
+    gnuPgFprs = GPGME.getSecretKeyFingerprintsForEmail(gIdentity.email);
+  } catch (ex) {
+    console.warn("Reading secret keys from GnuPG failed", ex);
+    return;
+  }
+  if (!gnuPgFprs.length) {
+    return;
+  }
+  const heldByGnuPg = new Set(gnuPgFprs.map(fpr => fpr.toUpperCase()));
+
+  const result = {};
+  await EnigmailKeyRing.getAllSecretKeysByEmail(gIdentity.email, result, true);
+
+  const nowSecondsSinceEpoch = Date.now() / 1000;
+  const offered = result.all
+    .filter(
+      key =>
+        heldByGnuPg.has(key.fpr.toUpperCase()) &&
+        (!key.expiryTime || key.expiryTime > nowSecondsSinceEpoch)
+    )
+    .sort((a, b) => b.keyCreated - a.keyCreated);
+  if (!offered.length) {
+    return;
+  }
+
+  // Key id rather than fingerprint, for the same reason as in the account
+  // settings: the field, the identity attributes and the key list all speak in
+  // key ids, and getKeyById() resolves either.
+  gSuggestedGnuPgKey = {
+    identityKey: gIdentity.key,
+    keyId: offered[0].keyId.toUpperCase(),
+  };
+
+  const choices = document.getElementById("openPgpKeyChoices");
+  choices.value = 2;
 }
 
 /**
@@ -437,17 +538,32 @@ async function wizardExternalKey() {
   revealSection("wizardExternalKey");
   kDialog.getButton("accept").classList.add("primary");
 
+  const keyInput = document.getElementById("externalKey");
+
+  // is_gnupg_key_id alone does not mean a key is configured. The account
+  // settings write it as "openpgp_key_id equals last_entered_external_gnupg_key_id",
+  // which is true for an identity with no key at all, because both are empty.
+  // Testing it without a key id would treat that identity as already set up and
+  // leave the field blank, so the key id is what decides here.
+  const configuredKey = gIdentity.getBoolAttribute("is_gnupg_key_id")
+    ? gIdentity.getUnicharAttribute("last_entered_external_gnupg_key_id")
+    : "";
+
   // If the user is already using an external GnuPG key, populate the input,
   // show the warning description, and enable the primary button.
-  if (gIdentity.getBoolAttribute("is_gnupg_key_id")) {
-    const key = gIdentity.getUnicharAttribute(
-      "last_entered_external_gnupg_key_id"
-    );
-    document.getElementById("externalKey").value = key ? `0x${key}` : "";
+  if (configuredKey) {
+    keyInput.value = `0x${configuredKey}`;
     document.getElementById("openPgpExternalWarning").collapsed = false;
-    kDialog.getButton("accept").disabled = !document
-      .getElementById("externalKey")
-      .checkValidity();
+    kDialog.getButton("accept").disabled = !keyInput.checkValidity();
+  } else if (gSuggestedGnuPgKey?.identityKey == gIdentity.key) {
+    // A key was found for this identity before the wizard opened. Fill it in so
+    // continuing needs no typing, and show the same warning the configured
+    // case shows, because this is the same situation from the user's side.
+    // The field stays editable: the suggestion is a starting point, not a
+    // commitment, and the user may type a different key.
+    keyInput.value = `0x${gSuggestedGnuPgKey.keyId}`;
+    document.getElementById("openPgpExternalWarning").collapsed = false;
+    kDialog.getButton("accept").disabled = !keyInput.checkValidity();
   } else {
     document.getElementById("openPgpExternalWarning").collapsed = true;
     kDialog.getButton("accept").disabled = true;

@@ -399,6 +399,9 @@ openpgp-copy-cmd-label =
 #   $identity (String) - the email address of the currently selected identity
 openpgp-description-no-key = { -brand-short-name } doesn’t have a personal OpenPGP key for <b>{ $identity }</b>
 
+#   $identity (String) - the email address of the currently selected identity
+openpgp-description-gnupg-not-used = { -brand-short-name } found a GnuPG keyring holding a key for <b>{ $identity }</b>, but is not using it
+
 #   $count (Number) - the number of configured keys associated with the current identity
 #   $identity (String) - the email address of the currently selected identity
 openpgp-description-has-keys = { $count ->
@@ -408,6 +411,20 @@ openpgp-description-has-keys = { $count ->
 
 #   $key (String) - the currently selected OpenPGP key
 openpgp-selection-status-have-key = Your current configuration uses key ID <b>{ $key }</b>
+
+#   $count (Number) - how many secret keys GnuPG holds for the address
+#   $identity (String) - the email address of the currently selected identity
+#   $key (String) - ID of the key that would be used, as shown in the key list
+openpgp-gnupg-offer-message = { $count ->
+    [one] GnuPG holds a secret key for { $identity }: 0x{ $key }. Use it to sign and encrypt mail?
+   *[other] GnuPG holds { $count } secret keys for { $identity }. Use 0x{ $key } to sign and encrypt mail?
+}
+
+openpgp-gnupg-offer-use-key = Use My GnuPG Key
+
+openpgp-gnupg-offer-use-internal = Use a Key Inside Thunderbird
+
+openpgp-gnupg-offer-dont-ask = Don’t Ask Again for This Identity
 
 #   $key (String) - the currently selected OpenPGP key
 #   $when (String) - the relative date when the OpenPGP key will expire e.g. "in 20 days"

@@ -30,6 +30,8 @@ run-if = ["nightly_build"]
 
 ["test_revocation.js"]
 
+["test_importGuard.js"]
+
 ["test_secretKeys.js"]
 
 ["test_strip.js"]

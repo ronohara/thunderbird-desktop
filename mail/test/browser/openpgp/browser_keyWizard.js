@@ -30,6 +30,9 @@ const { MockFilePicker } = ChromeUtils.importESModule(
 const { OpenPGPTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/mail/OpenPGPTestUtils.sys.mjs"
 );
+const { EnigmailKeyRing } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/keyRing.sys.mjs"
+);
 
 var gAccount;
 var gIdentity;
@@ -101,6 +104,156 @@ add_task(async function check_clean_keylist() {
  * Test that stepping forward and back always leaves exactly one section of the
  * wizard visible. See bug 2069581.
  */
+/**
+ * Test that a new identity whose key is already in GnuPG starts on the external
+ * path, and that the internal choices stay on screen beside it.
+ *
+ * The GnuPG boundary is stubbed rather than exercised: what this asserts is the
+ * wizard's choice, not the keyring's contents. The key itself is real, so the
+ * code path that picks it walks the same listing the product uses.
+ */
+add_task(async function preselect_gnupg_key_for_new_identity() {
+  const { GPGME } = ChromeUtils.importESModule(
+    "chrome://openpgp/content/modules/GPGME.sys.mjs"
+  );
+
+  // A key the listing returns, held (per the stub below) by GnuPG.
+  const ChromeRegistry = Cc["@mozilla.org/chrome/chrome-registry;1"].getService(
+    Ci.nsIChromeRegistry
+  );
+  const chromeUrl = Services.io.newURI(
+    getRootDirectory(gTestPath) +
+      "data/keys/alice@openpgp.example-0xf231550c4f47e38e-secret.asc"
+  );
+  const secretFile = ChromeRegistry.convertChromeURL(chromeUrl).QueryInterface(
+    Ci.nsIFileURL
+  ).file;
+  const importedKeyIds = await OpenPGPTestUtils.importPrivateKey(
+    window,
+    secretFile
+  );
+  Assert.ok(importedKeyIds.length, "the fixture key should be imported");
+  // Kept as returned: getKeyById() strips a lowercase "0x" only, so the id has
+  // to stay in the form the helper produced.
+  const keyId = importedKeyIds[0];
+  const keyFpr = EnigmailKeyRing.getKeyById(keyId).fpr.toUpperCase();
+
+  // An identity with no key of its own is the case the offer exists for.
+  const previousKeyId = gIdentity.getUnicharAttribute("openpgp_key_id");
+  gIdentity.setUnicharAttribute("openpgp_key_id", "");
+  gIdentity.setUnicharAttribute("last_entered_external_gnupg_key_id", "");
+
+  const originalInit = GPGME.init;
+  const originalGetFprs = GPGME.getSecretKeyFingerprintsForEmail;
+  GPGME.init = () => true;
+  GPGME.getSecretKeyFingerprintsForEmail = () => [keyFpr];
+  registerCleanupFunction(() => {
+    GPGME.init = originalInit;
+    GPGME.getSecretKeyFingerprintsForEmail = originalGetFprs;
+  });
+
+  let dialog;
+  try {
+    const button = tabDocument.getElementById("addOpenPgpButton");
+    EventUtils.synthesizeMouseAtCenter(button, {}, tabWindow);
+
+    const wizard = await wait_for_frame_load(
+      gTab.browser.contentWindow.gSubDialog._topDialog._frame,
+      "chrome://openpgp/content/ui/keyWizard.xhtml"
+    );
+    const doc = wizard.document;
+    dialog = doc.documentElement.querySelector("dialog");
+
+    const choices = doc.getElementById("openPgpKeyChoices");
+    Assert.equal(choices.value, "2", "the GnuPG choice should be preselected");
+
+    // The internal engine stays offered, not removed and not hidden.
+    Assert.ok(
+      !doc.getElementById("createOpenPgp").hidden,
+      "the create choice should still be visible"
+    );
+    Assert.ok(
+      !doc.getElementById("importOpenPgp").hidden,
+      "the import choice should still be visible"
+    );
+
+    // Continuing fills in the key that was found, so no typing is needed.
+    const externalView = doc.getElementById("wizardExternalKey");
+    dialog.acceptDialog();
+    await TestUtils.waitForCondition(
+      () => wizard.getComputedStyle(externalView).opacity == 1,
+      "Timeout waiting for the #wizardExternalKey to appear"
+    );
+
+    Assert.equal(
+      doc.getElementById("externalKey").value.toUpperCase(),
+      `0X${keyId.replace(/^0x/i, "").toUpperCase()}`,
+      "the key field should hold the key that was found"
+    );
+    Assert.ok(
+      !doc.querySelector("dialog").getButton("accept").disabled,
+      "the Continue button should be enabled"
+    );
+  } finally {
+    GPGME.init = originalInit;
+    GPGME.getSecretKeyFingerprintsForEmail = originalGetFprs;
+    dialog?.cancelDialog();
+    await OpenPGPTestUtils.removeKeyById(keyId.toLowerCase(), true);
+    gIdentity.setUnicharAttribute("openpgp_key_id", previousKeyId);
+    // The settings page cached the list this test changed; refresh it so the
+    // next task starts from the state it expects.
+    await tabWindow.reloadOpenPgpUI();
+  }
+});
+
+/**
+ * Test the settings description when the external path is switched off but a
+ * GnuPG keyring holds a key for the identity.
+ *
+ * The wording matters because the old sentence -- "doesn't have a personal
+ * OpenPGP key" -- was untrue in this state, and was the one that sent people to
+ * the internal engine. The GnuPG boundary is stubbed, since what is under test
+ * is the branch rather than the keyring's contents.
+ */
+add_task(async function description_reports_unused_gnupg_key() {
+  const { GPGME } = ChromeUtils.importESModule(
+    "chrome://openpgp/content/modules/GPGME.sys.mjs"
+  );
+  const description = tabDocument.getElementById("openPgpDescription");
+
+  const originalInit = GPGME.init;
+  const originalGetFprs = GPGME.getSecretKeyFingerprintsForEmail;
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  try {
+    // No readable keyring: the plain "no key" sentence is still correct.
+    GPGME.init = () => false;
+    await tabWindow.reloadOpenPgpUI();
+    Assert.equal(
+      description.dataset.l10nId,
+      "openpgp-description-no-key",
+      "with no keyring, the description should say there is no key"
+    );
+
+    // A keyring holding a key, with the switch off: say so instead.
+    GPGME.init = () => true;
+    GPGME.getSecretKeyFingerprintsForEmail = () => ["0".repeat(40)];
+    await tabWindow.reloadOpenPgpUI();
+    Assert.equal(
+      description.dataset.l10nId,
+      "openpgp-description-gnupg-not-used",
+      "with a keyring holding a key and the switch off, the description should say so"
+    );
+  } finally {
+    GPGME.init = originalInit;
+    GPGME.getSecretKeyFingerprintsForEmail = originalGetFprs;
+    await SpecialPowers.popPrefEnv();
+    await tabWindow.reloadOpenPgpUI();
+  }
+});
+
 add_task(async function switch_sections() {
   // Leave no dialog behind, a stuck one would fail every following task.
   let dialog;
@@ -526,6 +679,10 @@ add_task(async function check_for_go_back_button() {
   const openPGPKeyManagerButton = tabDocument.getElementById(
     "openOpenPGPKeyManagerButton"
   );
+  // The button sits below the fold on a small test window, and a synthesized
+  // click at its centre then lands outside the viewport: no error, no command,
+  // and the window never opens. Scroll it into view first.
+  openPGPKeyManagerButton.scrollIntoView({ block: "center" });
   EventUtils.synthesizeMouseAtCenter(openPGPKeyManagerButton, {}, tabWindow);
 
   const kmWindow = await keyManagerPromise;

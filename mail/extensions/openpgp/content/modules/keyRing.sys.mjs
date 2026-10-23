@@ -733,6 +733,22 @@ export var EnigmailKeyRing = {
   ) {
     const data = await IOUtils.read(inputFile.path);
     const contents = MailStringUtils.uint8ArrayToByteString(data);
+
+    // This is the route that writes secret material, and the one where the
+    // damage design 1.5 measured happens: without this check librnp would
+    // unprotect the key and re-protect it with the automatic passphrase, so a
+    // key safe in ~/.gnupg would acquire a second, recoverable copy here.
+    // Refused before librnp is asked to parse anything, and shaped like
+    // success so the wizard reports "no keys imported" rather than an error.
+    const heldFpr = await this.gnupgHeldSecretFingerprint(contents);
+    if (heldFpr) {
+      this._logRefusedSecretImport(heldFpr);
+      if (importedKeysObj) {
+        importedKeysObj.keys = [];
+      }
+      return 0;
+    }
+
     let res;
 
     let failed = true;
@@ -1101,6 +1117,81 @@ export var EnigmailKeyRing = {
    *   - code > 0: error
    *   - code == -1: Cancelled by user
    */
+  /**
+   * Fingerprint of a secret key in `keyBlock` that the external GnuPG keyring
+   * also holds, or null when there is nothing to refuse.
+   *
+   * Two questions in one place, because both callers need the same answer and
+   * a second copy of this logic is a second place to get it wrong. First,
+   * whether the block carries secret material at all -- parsed with librnp's
+   * secret-only flag, so a public block in the same call answers no without a
+   * keyring lookup. Second, whether GnuPG holds the secret for each one, which
+   * `GPGME.hasSecretKey()` answers with a listing.
+   *
+   * **Gated on `allow_external_gnupg`, and that is the whole gate.** Item 8's
+   * decision is that the pref governs: with the external path switched off the
+   * guard does not consult GnuPG, and a secret key may be imported into the
+   * internal store, because that user has chosen the store. What protects them
+   * instead is the Primary Password refusal at the point a key is created.
+   *
+   * @param {string} keyBlock - Armored or binary key data.
+   * @returns {Promise<?string>} Uppercase fingerprint, or null.
+   */
+  async gnupgHeldSecretFingerprint(keyBlock) {
+    if (!keyBlock) {
+      return null;
+    }
+    if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+      return null;
+    }
+    if (!lazy.GPGME.init()) {
+      return null;
+    }
+
+    let secretKeys;
+    try {
+      secretKeys = await lazy.RNP.getKeyListFromKeyBlockImpl(
+        keyBlock,
+        false,
+        true
+      );
+    } catch (ex) {
+      lazy.log.warn("Checking a key block for secret keys failed", ex);
+      return null;
+    }
+    if (!secretKeys?.length) {
+      return null;
+    }
+
+    for (const key of secretKeys) {
+      if (key.fpr && lazy.GPGME.hasSecretKey(key.fpr)) {
+        return key.fpr.toUpperCase();
+      }
+    }
+    return null;
+  },
+
+  /**
+   * Log a refusal in the one form that identifies which route reached it.
+   *
+   * The caller is the only thing that says which of the nine import sites was
+   * used, and it is not otherwise recoverable from the message path.
+   *
+   * @param {string} fingerprint - The key that was refused.
+   */
+  _logRefusedSecretImport(fingerprint) {
+    const caller =
+      new Error().stack
+        ?.split("\n")
+        .slice(2, 4)
+        .map(line => line.trim().replace(/^at\s+/, ""))
+        .join(" <- ") || "unknown";
+    lazy.log.warn(
+      `Refusing to import secret key ${fingerprint}: the external GnuPG ` +
+        `keyring holds it, so this would be a second copy (reached from ${caller})`
+    );
+  },
+
   async importKeyAsync(
     parent,
     askToConfirm,
@@ -1114,6 +1205,7 @@ export var EnigmailKeyRing = {
     acceptance = null
   ) {
     var pgpBlock;
+    let armoredType = null;
     if (!isBinary) {
       const beginIndexObj = {};
       const endIndexObj = {};
@@ -1135,10 +1227,32 @@ export var EnigmailKeyRing = {
         return 1;
       }
 
+      armoredType = blockType;
       pgpBlock = keyBlock.substr(
         beginIndexObj.value,
         endIndexObj.value - beginIndexObj.value + 1
       );
+    }
+
+    // A secret key that GnuPG already holds must not acquire a second copy
+    // here, which is the compromise design 1.5 describes and the reason this
+    // guard exists. Checked only when the block could carry secret material:
+    // an armored public block cannot, so the common import path pays nothing.
+    // A binary block is always checked, because its type is not readable
+    // without parsing.
+    const mayCarrySecret = isBinary || armoredType === "PRIVATE KEY BLOCK";
+    if (mayCarrySecret) {
+      const heldFpr = await this.gnupgHeldSecretFingerprint(
+        isBinary ? keyBlock : pgpBlock
+      );
+      if (heldFpr) {
+        this._logRefusedSecretImport(heldFpr);
+        // Success-shaped on purpose. Every caller of this function treats a
+        // non-zero exit as a failure it should report, and none of them did
+        // anything wrong by reaching a path this build deliberately declines
+        // to take. See the callout in the plan's Stage 2 for the trade.
+        return 0;
+      }
     }
 
     if (askToConfirm) {
@@ -1377,6 +1491,7 @@ export var EnigmailKeyRing = {
    *
    * @param {EnigmailKeyObj} keyObj - The key to check.
    * @param {string} [emailAddr] - Email address.
+   * @param allowExpired
    * @returns {integer} the validity level, negative for invalid,
    *   0 if no problem were found (neutral).
    */

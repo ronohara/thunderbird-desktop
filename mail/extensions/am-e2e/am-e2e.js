@@ -30,6 +30,9 @@ var { PgpSqliteDb2 } = ChromeUtils.importESModule(
 var { EnigmailCore } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/core.sys.mjs"
 );
+var { GPGME } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/GPGME.sys.mjs"
+);
 
 var email_signing_cert_usage = 4; // SECCertUsage.certUsageEmailSigner
 var email_recipient_cert_usage = 5; // SECCertUsage.certUsageEmailRecipient
@@ -228,35 +231,233 @@ function initSMIMESettings() {
 }
 
 /**
+ * Offer a key that only GnuPG holds, the first time an identity is set up.
+ *
+ * The offer is a prompt rather than a silent switch. Which key signs is a
+ * security-relevant fact, so an identity is never moved onto a different key
+ * without the user saying so. GnuPG's keyring is asked with a listing, not an
+ * export: no key material is read, and nothing is imported into the profile.
+ *
+ * The offer is made once per identity:
+ *   - Accepted: the key is recorded on the identity, and the caller's
+ *     useOpenPGPKey() puts it into effect.
+ *   - Not now: nothing is recorded, so the offer returns the next time these
+ *     settings are opened.
+ *   - Not now, with "don't ask again" ticked: the answer is recorded and the
+ *     offer stops. Dismissing the prompt without answering is treated as
+ *     "not now", never as that permanent answer.
+ *
+ * Nothing is offered when the external path is switched off (there is no
+ * keyring for the user to be offered, and the pref is their statement about
+ * that), when the identity already has a key (the question has been answered
+ * by choosing), or when GnuPG holds no usable secret key for the address.
+ * Recording an answer in that last case would suppress the offer after a key
+ * is added, so it is left unrecorded deliberately.
+ *
+ * @param {object} result - Keys found for this identity by
+ *   getAllSecretKeysByEmail(), including the transient GnuPG ones.
+ * @returns {Promise<boolean>} Whether the identity's key was changed.
+ */
+async function offerGnuPGKeyIfFirstUse(result) {
+  if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    return false;
+  }
+  if (gIdentity.getUnicharAttribute("openpgp_key_id")) {
+    return false;
+  }
+  if (gIdentity.getBoolAttribute("openpgp_gnupg_offer_answered")) {
+    return false;
+  }
+  if (!GPGME.init()) {
+    return false;
+  }
+
+  let gnuPgFprs;
+  try {
+    gnuPgFprs = GPGME.getSecretKeyFingerprintsForEmail(gIdentity.email);
+  } catch (ex) {
+    console.warn("Reading secret keys from GnuPG failed", ex);
+    return false;
+  }
+  if (!gnuPgFprs.length) {
+    return false;
+  }
+
+  // An expired key would be offered and then fail to sign, so it is not a
+  // candidate; the radio list still shows it, and the user may still choose
+  // it there.
+  const nowSecondsSinceEpoch = Date.now() / 1000;
+  const offered = result.all
+    .filter(
+      key =>
+        gnuPgFprs.some(fpr => fpr.toUpperCase() == key.fpr.toUpperCase()) &&
+        (!key.expiryTime || key.expiryTime > nowSecondsSinceEpoch)
+    )
+    // The same order the key list uses, so the offer and the list agree about
+    // which key is the newest one when several are held.
+    .sort((a, b) => b.keyCreated - a.keyCreated);
+  if (!offered.length) {
+    return false;
+  }
+  // The count in the message describes what is being offered, not how many
+  // secret keys the keyring holds: a key that GnuPG holds but that is not
+  // usable for this address is never offered, so counting it would overstate
+  // the choice in front of the user.
+  const offeredCount = offered.length;
+  // Stored and shown by key id, not fingerprint, because that is what the rest
+  // of this file reads: countPersonalKeys() compares against key.keyId, the
+  // radio list shows 0x<keyId>, and useOpenPGPKey() resolves the stored value
+  // through getKeyById(). Storing a fingerprint here would resolve but would
+  // not compare, so the key would be counted twice and its radio would not
+  // match the configured value.
+  const offeredKeyId = offered[0].keyId.toUpperCase();
+
+  const [message, useKeyLabel, useInternalLabel, dontAskLabel] =
+    await document.l10n.formatValues([
+      {
+        id: "openpgp-gnupg-offer-message",
+        args: {
+          count: offeredCount,
+          identity: gIdentity.email,
+          key: offeredKeyId,
+        },
+      },
+      "openpgp-gnupg-offer-use-key",
+      "openpgp-gnupg-offer-use-internal",
+      "openpgp-gnupg-offer-dont-ask",
+    ]);
+
+  const dontAsk = { value: false };
+  // Both answers are named. A plain Cancel would leave "use a key inside
+  // Thunderbird" as an unnamed absence rather than a choice, which is the
+  // opposite of what D1 asks for: the offer exists so the user decides.
+  const button = Services.prompt.confirmEx(
+    window,
+    gBrandBundle.getString("brandShortName"),
+    message,
+    Services.prompt.BUTTON_TITLE_IS_STRING * Services.prompt.BUTTON_POS_0 +
+      Services.prompt.BUTTON_TITLE_IS_STRING * Services.prompt.BUTTON_POS_1 +
+      Services.prompt.BUTTON_POS_0_DEFAULT,
+    useKeyLabel,
+    useInternalLabel,
+    null,
+    dontAskLabel,
+    dontAsk
+  );
+
+  if (button == 0) {
+    gIdentity.setUnicharAttribute("openpgp_key_id", offeredKeyId);
+    gIdentity.setUnicharAttribute(
+      "last_entered_external_gnupg_key_id",
+      offeredKeyId
+    );
+    gIdentity.setBoolAttribute("openpgp_gnupg_offer_answered", true);
+    return true;
+  }
+
+  // Choosing the internal engine, or dismissing the prompt, leaves the
+  // identity as it was. Only the explicit "don't ask again" stops the offer;
+  // a dismissal is not read as that answer.
+  if (dontAsk.value) {
+    gIdentity.setBoolAttribute("openpgp_gnupg_offer_answered", true);
+  }
+  return false;
+}
+
+/**
+ * The external GnuPG key id configured for this identity, or "" when the
+ * external path is switched off.
+ *
+ * The pref decides, not the attribute. A key can be configured and then the
+ * switch turned off, and the id is kept so switching back on restores it --
+ * but while the switch is off the key is not in use, so it must not be
+ * counted as one of the identity's keys.
+ *
+ * @returns {string} The configured key id, or "".
+ */
+function configuredExternalKeyId() {
+  if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    return "";
+  }
+  return gIdentity.getUnicharAttribute("last_entered_external_gnupg_key_id");
+}
+
+/**
+ * Whether GnuPG holds a secret key for the current identity.
+ *
+ * Read even when the external path is switched off, because that is the case
+ * the description has to be able to report: a keyring that exists and is not
+ * being used. It is a listing, not an export -- no key material is read, and
+ * nothing is imported -- and it runs when the settings screen opens rather
+ * than on any mail path, so its cost is paid once per visit.
+ *
+ * @returns {boolean} True if a matching secret key exists and is readable.
+ */
+function gnuPgHoldsKeyForIdentity() {
+  if (!gIdentity?.email || !GPGME.init()) {
+    return false;
+  }
+  try {
+    return GPGME.getSecretKeyFingerprintsForEmail(gIdentity.email).length > 0;
+  } catch (ex) {
+    console.warn("Reading secret keys from GnuPG failed", ex);
+    return false;
+  }
+}
+
+/**
+ * Write the OpenPGP description line for the current identity.
+ *
+ * Three states, and the middle one is the reason this is a function: a user
+ * whose keyring holds their key but who has switched the external path off
+ * used to be told there was no personal key, which is both untrue and the
+ * sentence that sent people to the internal engine. The count still comes from
+ * countPersonalKeys(), so this is a wording branch rather than a second count.
+ *
+ * @param {number} keyCount - Personal keys found, from countPersonalKeys().
+ */
+async function setOpenPgpDescription(keyCount) {
+  const description = document.getElementById("openPgpDescription");
+
+  if (keyCount) {
+    document.l10n.setAttributes(description, "openpgp-description-has-keys", {
+      count: keyCount,
+      identity: gIdentity.email,
+    });
+    return;
+  }
+
+  if (gnuPgHoldsKeyForIdentity()) {
+    document.l10n.setAttributes(
+      description,
+      "openpgp-description-gnupg-not-used",
+      {
+        identity: gIdentity.email,
+      }
+    );
+    return;
+  }
+
+  document.l10n.setAttributes(description, "openpgp-description-no-key", {
+    identity: gIdentity.email,
+  });
+}
+
+/**
  * Initialize the OpenPGP settings, apply strings, and load the key radio UI.
  */
 async function initOpenPgpSettings() {
   const result = {};
   await EnigmailKeyRing.getAllSecretKeysByEmail(gIdentity.email, result, true);
 
-  const externalKey = gIdentity.getUnicharAttribute(
-    "last_entered_external_gnupg_key_id"
-  );
+  // First use of this identity: offer a key that only GnuPG holds, before
+  // anything below reads the configured key. An accepted offer is written to
+  // the identity here and put into effect by useOpenPGPKey() at the end, so
+  // this function still has a single place where gKeyId changes.
+  await offerGnuPGKeyIfFirstUse(result);
 
-  const keyCount = countPersonalKeys(result, externalKey);
-  if (keyCount) {
-    document.l10n.setAttributes(
-      document.getElementById("openPgpDescription"),
-      "openpgp-description-has-keys",
-      {
-        count: keyCount,
-        identity: gIdentity.email,
-      }
-    );
-  } else {
-    document.l10n.setAttributes(
-      document.getElementById("openPgpDescription"),
-      "openpgp-description-no-key",
-      {
-        identity: gIdentity.email,
-      }
-    );
-  }
+  const keyCount = countPersonalKeys(result, configuredExternalKeyId());
+  await setOpenPgpDescription(keyCount);
 
   closeNotification();
 
@@ -1151,37 +1352,14 @@ async function reloadOpenPgpUI() {
   const result = {};
   await EnigmailKeyRing.getAllSecretKeysByEmail(gIdentity.email, result, true);
 
-  let externalKey = "";
-  if (Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
-    externalKey = gIdentity.getUnicharAttribute(
-      "last_entered_external_gnupg_key_id"
-    );
-  }
+  const externalKey = configuredExternalKeyId();
   const keyCount = countPersonalKeys(result, externalKey);
 
   // Show the radiogroup container only if the current identity has keys.
   // But still show it if a key (missing or unusable) is configured.
   document.getElementById("openPgpKeyList").hidden = keyCount == 0 && !gKeyId;
 
-  // Update the OpenPGP intro description with the current key count.
-  if (keyCount) {
-    document.l10n.setAttributes(
-      document.getElementById("openPgpDescription"),
-      "openpgp-description-has-keys",
-      {
-        count: keyCount,
-        identity: gIdentity.email,
-      }
-    );
-  } else {
-    document.l10n.setAttributes(
-      document.getElementById("openPgpDescription"),
-      "openpgp-description-no-key",
-      {
-        identity: gIdentity.email,
-      }
-    );
-  }
+  await setOpenPgpDescription(keyCount);
 
   const radiogroup = document.getElementById("openPgpKeyListRadio");
 

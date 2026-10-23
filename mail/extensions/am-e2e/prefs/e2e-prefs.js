@@ -40,6 +40,9 @@ pref("mail.openpgp.load_untested_gpgme_version", "");
 
 // The hexadecimal OpenPGP key ID used for an identity.
 pref("mail.identity.default.openpgp_key_id", "");
+// Set once the first-use offer of a GnuPG key has been answered with "don't
+// ask again", so the offer does not return for this identity.
+pref("mail.identity.default.openpgp_gnupg_offer_answered", false);
 // If true, then openpgp_key_id is managed externally by GnuPG
 pref("mail.identity.default.is_gnupg_key_id", false);
 // The hexadecimal OpenPGP key ID externally configured by GnuPG used for an identity.

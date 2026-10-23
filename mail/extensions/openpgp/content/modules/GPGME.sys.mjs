@@ -122,6 +122,44 @@ export var GPGME = {
   },
 
   /**
+   * Whether the external GnuPG keyring holds a *secret* key for a fingerprint.
+   *
+   * The distinction between this and "GnuPG knows this key" is the whole of
+   * its purpose: `gpgme_op_keylist_start` with `secret_only` unset returns a
+   * key whose public half is present and whose secret half may be nowhere but
+   * in the file a caller is about to import. Answering that as "held" would
+   * refuse an import the user actually needs.
+   *
+   * A listing rather than an export: no key material is read, and the listing
+   * stops at the first match, so this is cheap enough to call on every import.
+   * Subkeys are matched too, because a block may carry a secret subkey whose
+   * primary key is held elsewhere.
+   *
+   * @param {string} fingerprint - Fingerprint of the primary key or a subkey.
+   * @returns {boolean} True if GnuPG holds the secret for that fingerprint.
+   */
+  hasSecretKey(fingerprint) {
+    if (!fingerprint) {
+      return false;
+    }
+    const wanted = fingerprint.replace(/^0x/i, "").toUpperCase();
+    if (!this.init()) {
+      return false;
+    }
+    try {
+      const keys = GPGMELib.listKeys(wanted, true);
+      return keys.some(
+        key =>
+          key.fpr.toUpperCase() == wanted ||
+          key.subkeys?.some(sub => sub.fpr && sub.fpr.toUpperCase() == wanted)
+      );
+    } catch (ex) {
+      console.warn(`Checking GnuPG for the secret key ${wanted} failed`, ex);
+      return false;
+    }
+  },
+
+  /**
    * Public keys from GnuPG matching an identifier, without filtering by user
    * ID. Needed when the caller has a key id rather than an address.
    *
