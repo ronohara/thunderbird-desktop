@@ -755,6 +755,12 @@ import-rev-file = Import OpenPGP Revocation File
 gnupg-file = GnuPG Files
 import-keys-failed=Importing the keys failed
 
+# Shown when the external GnuPG path is in use and the selected secret key is
+# not in that keyring. This build has no route that writes a secret key into
+# GnuPG, so copying it into Thunderbird's store would put it in the store the
+# user is trying to leave. The two options named are the two that work.
+import-secret-key-belongs-in-gnupg = This secret key is not in your GnuPG keyring. Import it there with GnuPG, or switch off the external GnuPG keyring to store keys inside Thunderbird.
+
 # Variables:
 # $key (String) - Key id to unlock.
 # $date (String) - The date on which the key was created

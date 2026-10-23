@@ -374,7 +374,7 @@ Enigmail.msg = {
       // remove attached key if user ID changed
       this.removeAttachedKey();
     }
-    const revokedIDs = EnigmailKeyRing.findRevokedPersonalKeysByEmail(
+    const revokedIDs = await EnigmailKeyRing.findRevokedPersonalKeysByEmail(
       gCurrentIdentity.email
     );
 

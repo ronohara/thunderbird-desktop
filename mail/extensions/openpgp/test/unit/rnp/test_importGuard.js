@@ -40,6 +40,7 @@ const PUBLIC_FILE = "alice@openpgp.example-0xf231550c4f47e38e-pub.asc";
 
 let gOriginalInit;
 let gOriginalHasSecretKey;
+let gOriginalHasPublicKey;
 
 add_setup(async function () {
   do_get_profile();
@@ -47,19 +48,28 @@ add_setup(async function () {
 
   gOriginalInit = GPGME.init;
   gOriginalHasSecretKey = GPGME.hasSecretKey;
+  gOriginalHasPublicKey = GPGME.hasPublicKey;
 });
 
 /**
  * Stub the GnuPG boundary.
  *
  * @param {boolean|Function} held - What hasSecretKey() should answer.
- * @param {object} counter - Object whose `lookups` property is incremented.
+ * @param {object} counter - Tallies the calls, in `lookups` and `publicLookups`.
+ * @param {object} [options] - What the stub should answer.
+ * @param {boolean} [options.readable] - Whether GPGME.init() succeeds.
+ * @param {boolean} [options.publicHeld] - What hasPublicKey() answers; defaults
+ *   to the same answer as hasSecretKey().
  */
-function stubGnuPG(held, counter) {
-  GPGME.init = () => true;
+function stubGnuPG(held, counter, { readable = true, publicHeld } = {}) {
+  GPGME.init = () => readable;
   GPGME.hasSecretKey = () => {
     counter.lookups++;
     return typeof held == "function" ? held() : held;
+  };
+  GPGME.hasPublicKey = () => {
+    counter.publicLookups = (counter.publicLookups ?? 0) + 1;
+    return publicHeld === undefined ? held : publicHeld;
   };
 }
 
@@ -67,6 +77,7 @@ function stubGnuPG(held, counter) {
 async function restoreGnuPG() {
   GPGME.init = gOriginalInit;
   GPGME.hasSecretKey = gOriginalHasSecretKey;
+  GPGME.hasPublicKey = gOriginalHasPublicKey;
   if (Services.prefs.prefHasUserValue("mail.openpgp.allow_external_gnupg")) {
     Services.prefs.clearUserPref("mail.openpgp.allow_external_gnupg");
   }
@@ -162,11 +173,16 @@ add_task(async function importKeyAsync_permits_a_key_gnupg_lacks() {
   }
 });
 
-add_task(async function public_block_costs_no_lookup() {
+add_task(async function public_block_does_no_secret_key_lookup() {
   const block = await readKeyFixture(PUBLIC_FILE);
   const counter = { lookups: 0 };
   Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
-  stubGnuPG(true, counter);
+  Services.prefs.setBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
+  // Item 10 needs one public lookup per public import, so it cannot be zero.
+  // What is still true, and is what this task pins: the secret-key listing is
+  // never reached for a public block. The asymmetry is what makes a secret
+  // import cost more than a public one.
+  stubGnuPG(true, counter, { publicHeld: false });
 
   try {
     const errorMsgObj = {};
@@ -184,7 +200,7 @@ add_task(async function public_block_costs_no_lookup() {
     Assert.equal(
       counter.lookups,
       0,
-      "an armored public block must not reach GnuPG at all"
+      "an armored public block must not trigger a secret-key lookup"
     );
 
     EnigmailKeyRing.clearCache();
@@ -233,7 +249,7 @@ add_task(async function importSecKeyFromFile_refuses_when_gnupg_holds_it() {
   }
 });
 
-add_task(async function importSecKeyFromFile_permits_a_key_gnupg_lacks() {
+add_task(async function importSecKeyFromFile_refuses_a_key_gnupg_lacks() {
   const counter = { lookups: 0 };
   Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
   stubGnuPG(false, counter);
@@ -250,7 +266,52 @@ add_task(async function importSecKeyFromFile_permits_a_key_gnupg_lacks() {
       importedKeysObj
     );
 
-    Assert.equal(exitCode, 0, "the import should succeed");
+    Assert.equal(
+      exitCode,
+      1,
+      "with the external path in use, a key GnuPG lacks is an error rather than a refusal"
+    );
+    Assert.ok(
+      errorMsgObj.value,
+      "the error should carry a message the wizard can show"
+    );
+    Assert.equal(
+      importedKeysObj.keys.length,
+      0,
+      "no key should be reported as imported"
+    );
+
+    EnigmailKeyRing.clearCache();
+    const keyObj = EnigmailKeyRing.getKeyById(KEY_ID);
+    Assert.ok(
+      !keyObj || !keyObj.secretAvailable,
+      "and nothing is written to the profile store"
+    );
+  } finally {
+    await restoreGnuPG();
+  }
+});
+
+add_task(async function importSecKeyFromFile_permits_without_gnupg() {
+  const counter = { lookups: 0 };
+  Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
+  // The pref is on but GnuPG cannot load: the case of a machine with no gpg.
+  // There is no destination in GnuPG, so refusing would strand the user.
+  stubGnuPG(false, counter, { readable: false });
+
+  try {
+    const errorMsgObj = {};
+    const importedKeysObj = {};
+    const exitCode = await EnigmailKeyRing.importSecKeyFromFile(
+      null,
+      () => "",
+      false,
+      do_get_file(`${keyDir}/${SECRET_FILE}`),
+      errorMsgObj,
+      importedKeysObj
+    );
+
+    Assert.equal(exitCode, 0, "the import should succeed when GnuPG is absent");
     Assert.greater(
       importedKeysObj.keys.length,
       0,
@@ -261,7 +322,7 @@ add_task(async function importSecKeyFromFile_permits_a_key_gnupg_lacks() {
     const keyObj = EnigmailKeyRing.getKeyById(KEY_ID);
     Assert.ok(
       keyObj?.secretAvailable,
-      "this route does write the secret key when the guard permits it"
+      "with no GnuPG to hold the key, the internal store takes it"
     );
   } finally {
     await removeFixtureKey();
@@ -269,7 +330,117 @@ add_task(async function importSecKeyFromFile_permits_a_key_gnupg_lacks() {
   }
 });
 
-add_task(async function guard_defers_to_the_pref() {
+add_task(async function public_key_gnupg_holds_is_not_persisted() {
+  const block = await readKeyFixture(PUBLIC_FILE);
+  const counter = { lookups: 0 };
+  Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
+  Services.prefs.setBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
+  stubGnuPG(true, counter, { publicHeld: true });
+
+  // The transient load this guard performs reads the key back out of GnuPG.
+  const originalGetById = GPGME.getPublicKeysForId;
+  GPGME.getPublicKeysForId = () => new Map();
+
+  try {
+    const before = EnigmailKeyRing.getAllKeys(null, null).keyList.length;
+    const errorMsgObj = {};
+    const exitCode = await EnigmailKeyRing.importKeyAsync(
+      null,
+      false,
+      block,
+      false,
+      "",
+      errorMsgObj,
+      null
+    );
+
+    Assert.equal(exitCode, 0, "the refusal is shaped like success");
+    Assert.ok(!errorMsgObj.value, "and carries no error message");
+    Assert.greater(
+      counter.publicLookups ?? 0,
+      0,
+      "the guard should have asked GnuPG for the public key"
+    );
+
+    const after = EnigmailKeyRing.getAllKeys(null, null).keyList.length;
+    Assert.equal(
+      after,
+      before,
+      "a public key GnuPG holds is not written to the profile"
+    );
+  } finally {
+    GPGME.getPublicKeysForId = originalGetById;
+    await restoreGnuPG();
+  }
+});
+
+add_task(async function public_key_gnupg_lacks_is_persisted() {
+  const block = await readKeyFixture(PUBLIC_FILE);
+  const counter = { lookups: 0 };
+  Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
+  Services.prefs.setBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
+  stubGnuPG(false, counter, { publicHeld: false });
+
+  try {
+    const errorMsgObj = {};
+    const exitCode = await EnigmailKeyRing.importKeyAsync(
+      null,
+      false,
+      block,
+      false,
+      "",
+      errorMsgObj,
+      null
+    );
+
+    Assert.equal(exitCode, 0, "the import should succeed");
+    EnigmailKeyRing.clearCache();
+    Assert.ok(
+      EnigmailKeyRing.getKeyById(KEY_ID),
+      "a public key GnuPG lacks is still persisted, which is what makes it usable"
+    );
+  } finally {
+    await removeFixtureKey();
+    await restoreGnuPG();
+  }
+});
+
+add_task(
+  async function public_key_is_persisted_when_the_transient_path_is_off() {
+    const block = await readKeyFixture(PUBLIC_FILE);
+    const counter = { lookups: 0 };
+    // The pref that fills the transient cache is off, so refusing to persist
+    // would leave the key reachable from nowhere.
+    Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
+    Services.prefs.setBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg", false);
+    stubGnuPG(true, counter, { publicHeld: true });
+
+    try {
+      const errorMsgObj = {};
+      const exitCode = await EnigmailKeyRing.importKeyAsync(
+        null,
+        false,
+        block,
+        false,
+        "",
+        errorMsgObj,
+        null
+      );
+
+      Assert.equal(exitCode, 0, "the import should succeed");
+      EnigmailKeyRing.clearCache();
+      Assert.ok(
+        EnigmailKeyRing.getKeyById(KEY_ID),
+        "with no transient path the key is persisted rather than lost"
+      );
+    } finally {
+      await removeFixtureKey();
+      await restoreGnuPG();
+    }
+  }
+);
+
+add_task(async function import_is_permitted_with_the_pref_off() {
   const counter = { lookups: 0 };
   Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", false);
   stubGnuPG(true, counter);

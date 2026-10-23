@@ -32,6 +32,14 @@ run-if = ["nightly_build"]
 
 ["test_importGuard.js"]
 
+["test_importPackets.js"]
+
+["test_keyPrecedence.js"]
+
+["test_recipientChecks.js"]
+
+["test_staleRevision.js"]
+
 ["test_secretKeys.js"]
 
 ["test_strip.js"]

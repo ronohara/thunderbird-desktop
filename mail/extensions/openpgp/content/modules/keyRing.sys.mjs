@@ -35,11 +35,11 @@ import { openLinkExternally } from "resource:///modules/LinkHelper.sys.mjs";
 
 /**
  * @typedef KeyList
- * @property {EnigmailKeyObj[]} keyList
+ * @property {EnigmailKeyObj[]} keyList - The keys, in the order they were loaded.
  * @property {object[]} keySortList - Used for quickly sorting the keys.
  * @property {string} keySortList[].userId - User ID in lower case.
  * @property {string} keySortList[].keyId - Key ID.
- * @property {integer} keySortList[].keyNum
+ * @property {integer} keySortList[].keyNum - Index of the key in keyList.
  */
 
 /** @type {KeyList} */
@@ -66,9 +66,7 @@ export var EnigmailKeyRing = {
    * @param {string} sortColumn - The column name for sorting. One of:
    *   userid, keyid, keyidshort, fpr, keytype, validity, trust, created, expiry.
    * @param {1|-1} sortDirection - Sort direction: 1 = ascending / -1 = descending.
-   * @returns {object} keys - Key list; { keyList, keySortList }
-   * @returns {EnigmailKeyObj[]} keys.keyList - Key list. See {KeyList}.
-   * @returns {object[]} keys.keySortList - Key list. See {KeyList}.
+   * @returns {KeyList} The key list and its sort index. See {KeyList}.
    */
   getAllKeys(win, sortColumn, sortDirection) {
     if (!gKeyListObj) {
@@ -108,19 +106,30 @@ export var EnigmailKeyRing = {
       this.getAllKeys(); // ensure keylist is loaded;
     }
 
+    // GnuPG first, and the ring second, for a key GnuPG holds.
+    //
+    // The reverse order is what produced the 18 October false expiry: the
+    // profile held a copy that was correct in fingerprint and wrong in
+    // revision, and because the ring index was consulted first, Thunderbird
+    // reported the 2018 self-signature as current while GnuPG reported none.
+    // A stale copy must not be able to outrank the live key, and the only way
+    // to guarantee that is to stop asking it first.
+    //
+    // This is a precedence rule, not a merge. Two revisions of one certificate
+    // are not combined; GnuPG's is used and the copy is dead weight that Stage
+    // 7 offers to remove.
+    const fromGnuPG = this.getGnuPgKeyById(keyId);
+    if (fromGnuPG) {
+      return fromGnuPG;
+    }
+
     let keyObj = gKeyIndex.get(keyId);
 
     if (keyObj === undefined) {
       keyObj = gSubkeyIndex.get(keyId);
     }
 
-    if (keyObj !== undefined) {
-      return keyObj;
-    }
-
-    // A key that lives only in GnuPG is held transiently; it is not in the
-    // ring index, but callers such as determineOwnKeyUsability need to find it.
-    return this.getGnuPgKeyById(keyId);
+    return keyObj === undefined ? null : keyObj;
   },
 
   isSubkeyId(keyId) {
@@ -406,12 +415,29 @@ export var EnigmailKeyRing = {
    */
   async getCandidateKeysForEmail(emailAddr) {
     await this.loadGnuPgKeysForEmail(emailAddr);
-    const keys = [...this.getAllKeys(null, null).keyList];
+
+    // For a shared fingerprint the GnuPG revision is the one that survives.
+    // Pushing the ring keys first and skipping a transient key whose
+    // fingerprint was already present did the opposite: the *copy* was kept
+    // and the live key discarded, which is Item 14's defect one level up, in
+    // the list every recipient check reads.
+    //
+    // The de-duplication itself stays. The point is one answer per
+    // fingerprint, and that answer should be GnuPG's.
+    const fromGnuPG = new Map();
     for (const keyObj of this.getGnuPgKeysForEmail(emailAddr)) {
-      if (!keys.some(k => k.fpr.toUpperCase() == keyObj.fpr.toUpperCase())) {
-        keys.push(keyObj);
-      }
+      fromGnuPG.set(keyObj.fpr.toUpperCase(), keyObj);
     }
+
+    const keys = [];
+    for (const keyObj of this.getAllKeys(null, null).keyList) {
+      const fpr = keyObj.fpr.toUpperCase();
+      if (fromGnuPG.has(fpr)) {
+        continue;
+      }
+      keys.push(keyObj);
+    }
+    keys.push(...fromGnuPG.values());
     return keys;
   },
 
@@ -453,7 +479,8 @@ export var EnigmailKeyRing = {
       return null;
     }
     const id = keyId.replace(/^0x/i, "").toUpperCase();
-    const fpr = this.gnuPgKeyIds.get(id) ?? (this.gnuPgKeys.has(id) ? id : null);
+    const fpr =
+      this.gnuPgKeyIds.get(id) ?? (this.gnuPgKeys.has(id) ? id : null);
     return fpr ? (this.gnuPgKeys.get(fpr) ?? null) : null;
   },
 
@@ -749,6 +776,27 @@ export var EnigmailKeyRing = {
       return 0;
     }
 
+    // The mirror of the check above, and deliberately not the same shape. Here
+    // GnuPG is working but does not hold this key, so the external path is the
+    // one in use and this build has no route that writes a secret key into the
+    // keyring. Copying it into the profile instead would put the key in the
+    // store the user is trying to leave, so the answer is an explicit error:
+    // a user who selected a secret keyfile asked for something this build does
+    // not do, and silence would be worse than refusal.
+    if (this.externalGnuPGUsable()) {
+      lazy.log.warn(
+        "Refusing to import a secret key into the profile: the external " +
+          "GnuPG path is in use and this key is not in the keyring"
+      );
+      errorMsgObj.value = await lazy.l10n.formatValue(
+        "import-secret-key-belongs-in-gnupg"
+      );
+      if (importedKeysObj) {
+        importedKeysObj.keys = [];
+      }
+      return 1;
+    }
+
     let res;
 
     let failed = true;
@@ -782,7 +830,7 @@ export var EnigmailKeyRing = {
     if (importedKeysObj) {
       importedKeysObj.keys = res.importedKeys;
     }
-    if (res.importedKeys.length > 0) {
+    if (res.importedKeys.length) {
       EnigmailKeyRing.updateKeys(res.importedKeys);
     }
     EnigmailKeyRing.clearCache();
@@ -1172,6 +1220,85 @@ export var EnigmailKeyRing = {
   },
 
   /**
+   * Whether the external GnuPG path is switched on *and* actually working.
+   *
+   * The pref alone is not enough to refuse an import. It defaults to true in
+   * this fork, including on a machine with no GnuPG installed, where
+   * `GPGME.init()` fails because the library cannot be loaded. Refusing there
+   * would leave a user with no destination at all -- GnuPG cannot take the key
+   * because it is not there, and Thunderbird is not allowed to -- which is the
+   * one outcome D6 rules out by making the no-GnuPG user a supported user.
+   *
+   * So this is the condition for treating GnuPG as the owner of secret keys,
+   * and `allow_external_gnupg` alone is not.
+   *
+   * @returns {boolean} True if the external path is enabled and GnuPG loads.
+   */
+  externalGnuPGUsable() {
+    return (
+      Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") &&
+      lazy.GPGME.init()
+    );
+  },
+
+  /**
+   * Fingerprint of a public key in `keyBlock` that the external GnuPG keyring
+   * also holds, or null when there is nothing to leave alone.
+   *
+   * Item 10's rule: a public key GnuPG holds is not written to the profile.
+   * The live key in the keyring is the authority, so a copy in the profile
+   * cannot outrank it later, and the 18 October stale revision has no
+   * mechanism left to recur.
+   *
+   * **Gated on the transient path being live, not merely on the pref.** A key
+   * that is neither written to the profile nor reachable through the transient
+   * cache would be lost, and the cache is filled by loadGnuPgKeysForEmail(),
+   * which needs `allow_external_gnupg` *and* `fetch_pubkeys_from_gnupg` and a
+   * working GPGME. Those three together are this guard's condition, so the
+   * refusal only happens where the key is still obtainable.
+   *
+   * @param {string} keyBlock - Armored or binary key data.
+   * @returns {Promise<?string>} Uppercase fingerprint, or null.
+   */
+  async gnupgHeldPublicFingerprint(keyBlock) {
+    if (!keyBlock) {
+      return null;
+    }
+    if (
+      !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") ||
+      !Services.prefs.getBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg") ||
+      !lazy.GPGME.init()
+    ) {
+      return null;
+    }
+
+    let publicKeys;
+    try {
+      publicKeys = await lazy.RNP.getKeyListFromKeyBlockImpl(keyBlock);
+    } catch (ex) {
+      lazy.log.warn("Checking a key block for public keys failed", ex);
+      return null;
+    }
+    if (!publicKeys?.length) {
+      return null;
+    }
+    // A block that carries secret material is Item 8 and Item 9's business,
+    // not this item's. Refusing it here would block importing a secret key
+    // whose public part happens to be in the keyring, which is a legitimate
+    // import when GnuPG lacks the secret.
+    if (publicKeys.some(key => key.secretAvailable)) {
+      return null;
+    }
+
+    for (const key of publicKeys) {
+      if (key.fpr && lazy.GPGME.hasPublicKey(key.fpr)) {
+        return key.fpr.toUpperCase();
+      }
+    }
+    return null;
+  },
+
+  /**
    * Log a refusal in the one form that identifies which route reached it.
    *
    * The caller is the only thing that says which of the nine import sites was
@@ -1255,6 +1382,29 @@ export var EnigmailKeyRing = {
       }
     }
 
+    // A public key GnuPG holds is not written to the profile. The copy is
+    // redundant while the keyring has it, and a redundant copy is what let the
+    // 18 October stale revision outrank the live key. The transient key is
+    // loaded explicitly so the caller can still resolve it by fingerprint --
+    // and it is only refused at all when the transient path is live, which is
+    // what stops this from losing the key instead of leaving it in place.
+    const isArmoredSecretBlock = armoredType === "PRIVATE KEY BLOCK";
+    if (!isArmoredSecretBlock) {
+      const heldPublicFpr = await this.gnupgHeldPublicFingerprint(
+        isBinary ? keyBlock : pgpBlock
+      );
+      if (heldPublicFpr) {
+        if (importedKeysObj) {
+          importedKeysObj.value = [];
+        }
+        await this.loadGnuPgKeyById(heldPublicFpr);
+        lazy.log.debug(
+          `Not persisting public key ${heldPublicFpr}: GnuPG holds it`
+        );
+        return 0;
+      }
+    }
+
     if (askToConfirm) {
       if (
         Services.prompt.confirmEx(
@@ -1314,7 +1464,7 @@ export var EnigmailKeyRing = {
       if (importedKeysObj) {
         importedKeysObj.value = result.importedKeys;
       }
-      if (result.importedKeys.length > 0) {
+      if (result.importedKeys.length) {
         EnigmailKeyRing.updateKeys(result.importedKeys);
       }
     }
@@ -1330,7 +1480,7 @@ export var EnigmailKeyRing = {
     isBinary,
     limitedUids = []
   ) {
-    if (preview.length > 0) {
+    if (preview.length) {
       const acceptance = lazy.EnigmailDialog.confirmPubkeyImport(
         window,
         preview
@@ -1379,7 +1529,7 @@ export var EnigmailKeyRing = {
     limitedUids = []
   ) {
     let somethingWasImported = false;
-    if (keyArray.length > 0) {
+    if (keyArray.length) {
       const acceptance = lazy.EnigmailDialog.confirmPubkeyImport(
         window,
         keyArray
@@ -1491,7 +1641,7 @@ export var EnigmailKeyRing = {
    *
    * @param {EnigmailKeyObj} keyObj - The key to check.
    * @param {string} [emailAddr] - Email address.
-   * @param allowExpired
+   * @param {boolean} allowExpired - Whether an expired key may still count.
    * @returns {integer} the validity level, negative for invalid,
    *   0 if no problem were found (neutral).
    */
@@ -1935,7 +2085,7 @@ export var EnigmailKeyRing = {
 
     deleteKeysFromCache(uniqueKeys);
 
-    if (gKeyListObj.keyList.length > 0) {
+    if (gKeyListObj.keyList.length) {
       loadKeyList(null, null, 1, uniqueKeys);
     } else {
       loadKeyList(null, null, 1);
@@ -1945,16 +2095,43 @@ export var EnigmailKeyRing = {
   },
 
   /**
-   * @param {string} email
+   * Fingerprints of revoked personal keys for an address, including keys that
+   * live only in the external GnuPG keyring.
+   *
+   * The transient set is included because a revoked key is exactly the case
+   * where its absence is worst: the caller attaches these revocation
+   * certificates to a message so recipients learn the key is dead, and a
+   * revoked personal key held by GnuPG used to be invisible here -- the ring
+   * was read directly. Found by Item 16's sweep, which is why this is async:
+   * the transient cache has to be loaded before it can be read.
+   *
+   * @param {string} email - Address to match.
+   * @returns {Promise<string[]>} Fingerprints, each prefixed with "0x".
    */
-  findRevokedPersonalKeysByEmail(email) {
+  async findRevokedPersonalKeysByEmail(email) {
     const res = [];
     if (email === "") {
       return res;
     }
     email = email.toLowerCase();
-    this.getAllKeys(); // ensure keylist is loaded;
-    for (const k of gKeyListObj.keyList) {
+    await this.loadGnuPgKeysForEmail(email);
+
+    const candidates = [
+      ...this.getKeysByEmail(email, true, true),
+      ...this.getGnuPgKeysForEmail(email),
+    ];
+    const seen = new Set();
+    const unique = [];
+    for (const k of candidates) {
+      const fpr = k.fpr.toUpperCase();
+      if (seen.has(fpr)) {
+        continue;
+      }
+      seen.add(fpr);
+      unique.push(k);
+    }
+
+    for (const k of unique) {
       if (k.keyTrust != "r") {
         continue;
       }

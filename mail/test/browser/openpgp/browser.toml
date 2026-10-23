@@ -40,6 +40,8 @@ run-if = [
 
 ["browser_openPGPDrafts.js"]
 
+["browser_openpgpSettings.js"]
+
 ["browser_perm_decrypt.js"]
 
 ["browser_pgpSignedPartDispatch.js"]

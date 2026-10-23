@@ -1299,13 +1299,16 @@ function findKeyInGnuPG(keyId, fingerprint) {
     return { status: "unavailable" };
   }
 
-  for (const [fpr, keyData] of keysFromGnuPGMap) {
+  for (const fpr of keysFromGnuPGMap.keys()) {
     // Accept both a full fingerprint and a key id, per normalizeKeyInput().
     if (
       (fingerprint && fpr.toUpperCase() == fingerprint) ||
       normalizeKeyInput(fpr) == keyId
     ) {
-      return { status: "found", fingerprint: fpr, keyData };
+      // Only the fingerprint is returned. The armored block used to travel
+      // with it so the caller could import it into the profile; that import is
+      // gone, and the caller now loads the key transiently by fingerprint.
+      return { status: "found", fingerprint: fpr };
     }
   }
   return { status: "not-found" };
@@ -1328,18 +1331,18 @@ async function openPgpExternalComplete() {
   if (!keyObj?.getUserIdWithEmail(gIdentity.email)) {
     gnuPgLookup = findKeyInGnuPG(keyId, fingerprint);
     if (gnuPgLookup.status == "found") {
-      // The key exists only in GnuPG. Its public part is imported into the
-      // profile ring because both signing and the own-key usability check
-      // require the public key to be available there. Keep the button
-      // disabled while that runs, so a second press cannot start a second
-      // import.
+      // The key exists only in GnuPG, so it is made reachable through the
+      // transient cache rather than copied into the profile. Nothing is
+      // written: getKeyById() resolves a transient key by fingerprint, which
+      // is what signing and the own-key usability check need, and Item 10
+      // refuses to persist a key GnuPG holds for exactly this reason.
+      //
+      // loadGnuPgKeyById() rather than a profile import also covers the case
+      // where `fetch_pubkeys_from_gnupg` is off: that pref gates the
+      // address-keyed discovery, not a lookup by fingerprint, so the key is
+      // still reachable and the wizard still completes.
       acceptButton.disabled = true;
-      await EnigmailKeyRing.importKeyDataSilent(
-        null,
-        gnuPgLookup.keyData,
-        false,
-        gnuPgLookup.fingerprint
-      );
+      await EnigmailKeyRing.loadGnuPgKeyById(gnuPgLookup.fingerprint);
       keyObj = EnigmailKeyRing.getKeyById(keyId);
     }
   }

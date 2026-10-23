@@ -160,6 +160,36 @@ export var GPGME = {
   },
 
   /**
+   * Whether the external GnuPG keyring holds a public key for a fingerprint.
+   *
+   * The public counterpart of hasSecretKey(), and the same shape: a listing
+   * with no key material read, matching subkeys as well as the primary.
+   *
+   * @param {string} fingerprint - Fingerprint of the primary key or a subkey.
+   * @returns {boolean} True if GnuPG holds the key.
+   */
+  hasPublicKey(fingerprint) {
+    if (!fingerprint) {
+      return false;
+    }
+    const wanted = fingerprint.replace(/^0x/i, "").toUpperCase();
+    if (!this.init()) {
+      return false;
+    }
+    try {
+      const keys = GPGMELib.listKeys(wanted, false);
+      return keys.some(
+        key =>
+          key.fpr.toUpperCase() == wanted ||
+          key.subkeys?.some(sub => sub.fpr && sub.fpr.toUpperCase() == wanted)
+      );
+    } catch (ex) {
+      console.warn(`Checking GnuPG for the key ${wanted} failed`, ex);
+      return false;
+    }
+  },
+
+  /**
    * Public keys from GnuPG matching an identifier, without filtering by user
    * ID. Needed when the caller has a key id rather than an address.
    *

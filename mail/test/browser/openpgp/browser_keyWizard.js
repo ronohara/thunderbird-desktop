@@ -449,6 +449,15 @@ add_task(async function generate_new_key() {
  * Import an OpenPGP secret key from file.
  */
 add_task(async function import_secret_key() {
+  // Importing a secret key into the profile is refused while the external
+  // GnuPG path is in use (Item 9 in the plan): the key belongs in the keyring,
+  // and this build has no route that writes there. The suite enables that pref
+  // for the external-key tasks, so it is switched off here to exercise the
+  // internal store, which is the only route that can import a secret key.
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+
   // Open the key wizard from the "Add Key" button.
   const button = tabDocument.getElementById("addOpenPgpButton");
   EventUtils.synthesizeMouseAtCenter(button, {}, tabWindow);
@@ -562,6 +571,129 @@ add_task(async function import_secret_key() {
   // Remove all the previously generated radio options, except the first.
   while (keyListRadio.lastChild.id != "openPgpOptionNone") {
     keyListRadio.removeChild(keyListRadio.lastChild);
+  }
+
+  await SpecialPowers.popPrefEnv();
+});
+
+/**
+ * Setting an external key that GnuPG holds must not put a copy in the profile.
+ *
+ * This is the path Item 12 removed an import from: completing the external
+ * section used to import the key's public part into the profile ring. The key
+ * is now loaded into the transient cache instead, so the wizard completes and
+ * nothing is written.
+ */
+add_task(async function external_key_is_not_copied_into_the_profile() {
+  const { GPGME } = ChromeUtils.importESModule(
+    "chrome://openpgp/content/modules/GPGME.sys.mjs"
+  );
+
+  const ChromeRegistry = Cc["@mozilla.org/chrome/chrome-registry;1"].getService(
+    Ci.nsIChromeRegistry
+  );
+  const chromeUrl = Services.io.newURI(
+    getRootDirectory(gTestPath) +
+      "data/keys/alice@openpgp.example-0xf231550c4f47e38e-pub.asc"
+  );
+  const pubFile = ChromeRegistry.convertChromeURL(chromeUrl).QueryInterface(
+    Ci.nsIFileURL
+  ).file;
+  const keyBlock = new TextDecoder().decode(await IOUtils.read(pubFile.path));
+
+  const EXTERNAL_KEY_ID = "F231550C4F47E38E";
+  const EXTERNAL_FPR = "EB85BB5FA33A75E15E944E63F231550C4F47E38E";
+
+  const originalInit = GPGME.init;
+  const originalByEmail = GPGME.getPublicKeysForEmail;
+  const originalById = GPGME.getPublicKeysForId;
+  GPGME.init = () => true;
+  // GnuPG reports the key as held, which is the case that used to be imported.
+  GPGME.getPublicKeysForEmail = () => new Map([[EXTERNAL_FPR, keyBlock]]);
+  GPGME.getPublicKeysForId = () => new Map([[EXTERNAL_FPR, keyBlock]]);
+
+  gIdentity.setUnicharAttribute("openpgp_key_id", "");
+  gIdentity.setUnicharAttribute("last_entered_external_gnupg_key_id", "");
+
+  let dialog;
+  try {
+    EnigmailKeyRing.clearCache();
+    Assert.ok(
+      !EnigmailKeyRing.getAllKeys(null, null).keyList.some(
+        k => k.fpr.toUpperCase() == EXTERNAL_FPR
+      ),
+      "the fixture key should not be in the profile ring to begin with"
+    );
+
+    const button = tabDocument.getElementById("addOpenPgpButton");
+    EventUtils.synthesizeMouseAtCenter(button, {}, tabWindow);
+
+    const wizard = await wait_for_frame_load(
+      gTab.browser.contentWindow.gSubDialog._topDialog._frame,
+      "chrome://openpgp/content/ui/keyWizard.xhtml"
+    );
+    const doc = wizard.document;
+    dialog = doc.documentElement.querySelector("dialog");
+
+    // Choose the external path and enter the key id.
+    EventUtils.synthesizeMouseAtCenter(
+      doc.getElementById("externalOpenPgp"),
+      {},
+      dialog.documentGlobal
+    );
+    const externalView = doc.getElementById("wizardExternalKey");
+    dialog.acceptDialog();
+    await TestUtils.waitForCondition(
+      () => wizard.getComputedStyle(externalView).opacity == 1,
+      "Timeout waiting for the #wizardExternalKey section"
+    );
+
+    const keyInput = doc.getElementById("externalKey");
+    keyInput.focus();
+    EventUtils.sendString(EXTERNAL_KEY_ID, wizard);
+
+    dialog.acceptDialog();
+
+    // The wizard closes itself through okExternalCallback; waiting on a window
+    // is wrong here because this is a subdialog frame, so the observable
+    // effect is the identity attribute it sets.
+    await TestUtils.waitForCondition(
+      () => gIdentity.getUnicharAttribute("openpgp_key_id"),
+      "Timeout waiting for the external key to be set on the identity"
+    );
+
+    Assert.equal(
+      gIdentity.getUnicharAttribute("openpgp_key_id"),
+      EXTERNAL_KEY_ID,
+      "the wizard should complete and record the external key id"
+    );
+    Assert.ok(
+      gIdentity.getBoolAttribute("is_gnupg_key_id"),
+      "and mark the identity as using an external key"
+    );
+
+    EnigmailKeyRing.clearCache();
+    const inRing = EnigmailKeyRing.getAllKeys(null, null).keyList.some(
+      k => k.fpr.toUpperCase() == EXTERNAL_FPR
+    );
+    Assert.ok(
+      !inRing,
+      "nothing should be written to the profile ring for a key GnuPG holds"
+    );
+  } finally {
+    GPGME.init = originalInit;
+    GPGME.getPublicKeysForEmail = originalByEmail;
+    GPGME.getPublicKeysForId = originalById;
+    dialog?.cancelDialog();
+    // Clearing the identity attributes is not enough: the settings page keeps
+    // its own gKeyId, so the key would still be listed for the next task and
+    // that task's baseline item count would be wrong. useOpenPGPKey() is the
+    // sanctioned way to change it -- the file says so -- and it also clears
+    // is_gnupg_key_id.
+    tabWindow.useOpenPGPKey("");
+    gIdentity.setUnicharAttribute("last_entered_external_gnupg_key_id", "");
+    EnigmailKeyRing.clearCache();
+    await tabWindow.reloadOpenPgpUI();
   }
 });
 
