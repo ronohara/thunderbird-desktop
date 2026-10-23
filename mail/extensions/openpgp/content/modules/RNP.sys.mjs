@@ -3381,8 +3381,52 @@ export var RNP = {
             // or ask the user, if allowed
             primaryKey.setPasswordCache(pwCache);
             primaryKey.setAllowAutoUnlockWithCachedPasswords(true);
-            primaryKey.setAllowPromptingUserForPassword(!!passCB);
-            primaryKey.setPassphraseCallback(passCB);
+
+            // Item 23: bound the remaining prompt site.
+            //
+            // A passphrase callback is legitimate here. A user with an internal
+            // key protected by their own passphrase must still be able to
+            // unlock it, and that passphrase belongs to Thunderbird's store and
+            // was typed for this purpose. What is not legitimate is the same
+            // callback running for a key whose protection lives in the external
+            // keyring: gpg-agent asks for that passphrase through pinentry, and
+            // Thunderbird must never see it -- a prompt here is what makes
+            // unprotect-with-the-typed-passphrase possible.
+            //
+            // This is a bound independent of the two that already exist. The
+            // import is refused earlier for a GnuPG-held key, and the unlock
+            // tracker refuses to prompt for one; both are correct, and both are
+            // guards in front of *this* line. If either is ever reordered, or a
+            // new route reaches this code without them, the callback would
+            // still be wired up and would still ask. So the callback is not
+            // handed over for such a key at all.
+            //
+            // Checked here rather than at the call sites because this is the
+            // one place every secret-key import passes through with a callback
+            // in hand, and the item asks for the assertion to hold whatever the
+            // call graph does next.
+            let mayPromptForThisKey = !!passCB;
+            if (mayPromptForThisKey) {
+              const fprToCheck = primaryKey.getFingerprint();
+              if (
+                fprToCheck &&
+                lazy.GPGME.init() &&
+                lazy.GPGME.hasSecretKey(fprToCheck)
+              ) {
+                lazy.log.error(
+                  `Refusing to attach a passphrase prompt for ${fprToCheck}: ` +
+                    `the external GnuPG keyring holds this key, so its ` +
+                    `passphrase is gpg-agent's to ask for. This should not be ` +
+                    `reachable; the import guard should have refused earlier.`
+                );
+                mayPromptForThisKey = false;
+              }
+            }
+
+            primaryKey.setAllowPromptingUserForPassword(mayPromptForThisKey);
+            primaryKey.setPassphraseCallback(
+              mayPromptForThisKey ? passCB : null
+            );
             primaryKey.setRememberUnlockPassword(true);
             await primaryKey.unlock(tempFFI);
             if (!primaryKey.isUnlocked()) {
@@ -4091,6 +4135,36 @@ export var RNP = {
    * @returns {?object[]} { fpr, keyBlock } per recipient, or null when a
    *   recipient has no usable key.
    */
+  /**
+   * Record what GnuPG actually used, for display only.
+   *
+   * Delegation costs the caller its certainty: when gpg picks the key, the
+   * caller can no longer assume which one ran, and a user cannot verify a
+   * choice they cannot see. These fields are the answer to "what handled
+   * this", written where the composer and the message header can read them.
+   *
+   * Recorded after the engine call rather than before, because the result
+   * object is reset at the start of every signing and encryption attempt --
+   * a value written before it would be wiped by the call it describes.
+   *
+   * @param {object} resultStatus - Out parameter of encryptAndOrSign.
+   * @param {object} used - { signingKey, recipients }, either may be absent.
+   */
+  recordEngineReadBack(resultStatus, used) {
+    if (!resultStatus || typeof resultStatus != "object") {
+      return;
+    }
+
+    if (used.signingKey) {
+      resultStatus.externalSigningKeyFpr = used.signingKey.fpr;
+      resultStatus.externalSigningKeySource = used.signingKey.source;
+    }
+
+    if (used.recipients) {
+      resultStatus.externalRecipientFprs = used.recipients.map(r => r.fpr);
+    }
+  },
+
   async getGnuPgEncryptionRecipients(args) {
     const recipients = [];
     const seen = new Set();
@@ -4247,28 +4321,31 @@ export var RNP = {
       return null;
     }
 
-    let signingKeyID = null;
+    let signingKey = null;
     if (args.sign) {
       // The sender's key may exist only in GnuPG, in which case RNP holds no
-      // handle for it. Ask GnuPG which of its keys should sign.
-      signingKeyID = lazy.GPGME.getSigningKeyIdForEmail(
-        args.sender.replace(/^0x/, "").replace(/^<|>$/g, "")
+      // handle for it. Ask GnuPG which of its keys should sign, and keep the
+      // answer so it can be reported back.
+      signingKey = await lazy.GPGME.resolveSigningKeyForIdentity(
+        args.sender.replace(/^0x/, "")
       );
-      if (!signingKeyID) {
+      if (!signingKey) {
         throw new Error(
           "no suitable signing key found for external GnuPG key " + args.sender
         );
       }
-      args.externalSenderSigningKeyID = signingKeyID;
+      args.externalSenderSigningKeyID = signingKey.keyId;
     }
 
-    return lazy.GPGME.encrypt(
+    const result = await lazy.GPGME.encrypt(
       plaintext,
       args,
       resultStatus,
       recipients,
-      signingKeyID
+      signingKey?.keyId ?? null
     );
+    this.recordEngineReadBack(resultStatus, { signingKey, recipients });
+    return result;
   },
 
   async encryptAndOrSign(plaintext, args, resultStatus) {
@@ -4293,14 +4370,15 @@ export var RNP = {
       // The sender's key may exist only in GnuPG, where RNP has no handle for
       // it. Ask GnuPG which of its keys should sign, the same way the
       // encrypt path does.
-      args.externalSenderSigningKeyID = lazy.GPGME.getSigningKeyIdForEmail(
-        args.sender.replace(/^0x/, "").replace(/^<|>$/g, "")
+      const signingKey = await lazy.GPGME.resolveSigningKeyForIdentity(
+        args.sender.replace(/^0x/, "")
       );
-      if (!args.externalSenderSigningKeyID) {
+      if (!signingKey) {
         throw new Error(
           "no suitable signing key found for external GnuPG key " + args.sender
         );
       }
+      args.externalSenderSigningKeyID = signingKey.keyId;
 
       if (args.encrypt) {
         // If we are asked to encrypt and sign at the same time, it
@@ -4313,6 +4391,7 @@ export var RNP = {
         if (!signedInner) {
           throw new Error("GPGME.sign failed");
         }
+        this.recordEngineReadBack(resultStatus, { signingKey });
         // Despite our request to produce binary data, GPGME.sign might
         // have produce ASCII armored encoding, e.g. if the user has
         // a configuration file that enables it.
@@ -4330,6 +4409,8 @@ export var RNP = {
           args,
           resultStatus
         );
+        // After the call, because signDetached resets resultStatus.
+        this.recordEngineReadBack(resultStatus, { signingKey });
         if (!signResult) {
           throw new Error("GPGME.signDetached failed");
         }

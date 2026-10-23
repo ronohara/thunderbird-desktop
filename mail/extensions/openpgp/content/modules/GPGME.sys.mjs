@@ -6,6 +6,7 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   EnigmailConstants: "chrome://openpgp/content/modules/constants.sys.mjs",
   GPGMELibLoader: "chrome://openpgp/content/modules/GPGMELib.sys.mjs",
+  GnuPGAgent: "chrome://openpgp/content/modules/gnupgAgent.sys.mjs",
   ctypes: "resource://gre/modules/ctypes.sys.mjs",
 });
 
@@ -204,71 +205,178 @@ export var GPGME = {
   },
 
   /**
-   * Pick the key id to sign with, from the keys GnuPG holds.
+   * Ask GnuPG which key should sign, and report what it said.
    *
-   * A primary key that cannot sign (a certification-only key, or one whose
-   * signing subkey is the only usable one) would make gpgme_op_sign fail, so
-   * prefer a subkey that can sign and fall back to the primary key.
+   * Thunderbird does not rank keys here. The identity is handed to gpg, and
+   * the answer is assembled from gpg's own listing: the order it prints, the
+   * states it reports, and the key it has been configured to prefer.
    *
-   * @param {string} email - Address of the sender, or a fingerprint/key id.
-   * @returns {?string} Fingerprint of the chosen signing key, or null.
+   * Three of gpg's rules are applied, and each one is sourced rather than
+   * reinterpreted:
+   *
+   * - **`--default-key`.** When gpg has a default key configured and that key
+   *   belongs to this identity, it wins. This is the one rule `--local-user`
+   *   does not express, because an explicit `-u` overrides it -- measured, and
+   *   the reason it is applied here instead.
+   * - **gpg's key order.** Otherwise the first usable key gpg lists for the
+   *   identity is used, which is what `--local-user <identity>` resolves to.
+   * - **gpg's key state.** Revoked, expired, invalid and disabled keys are
+   *   excluded, from gpg's own validity and capability fields.
+   *
+   * **And one of gpg's rules is deliberately not followed.** Measured on gpg
+   * 2.4.4: `--local-user <identity>` still signs with a key that has been
+   * disabled. Delegating that answer literally would mean sending with a key
+   * the user has retired, so disabled stays excluded here.
+   *
+   * The signing subkey is still chosen by us rather than by gpg, because
+   * gpgme cannot pick one: handing it a primary key id that cannot sign makes
+   * `gpgme_op_sign` fail (bug 2026356). That is a gpgme limitation, not a
+   * preference, and it is why this function returns a subkey key id whenever
+   * the key has a usable signing subkey.
+   *
+   * @param {string} identity - The sender's address, or a key id/fingerprint.
+   * @returns {Promise<?object>} { keyId, fpr, source } where source is
+   *   "default-key" or "gnupg-order", or null when gpg holds no usable key.
    */
-  getSigningKeyIdForEmail(email) {
-    const wanted = email?.toLowerCase();
-    if (!wanted) {
+  async resolveSigningKeyForIdentity(identity) {
+    const raw = String(identity ?? "").trim();
+    if (!raw) {
       return null;
     }
 
-    // The caller may pass an address or a key id/fingerprint; only the former
-    // can be filtered by user ID, so a key id is matched after listing.
-    const isKeyId = /^(0x)?[0-9a-f]{8,64}$/i.test(email);
-    const wantedId = isKeyId ? email.replace(/^0x/i, "").toUpperCase() : null;
+    const isKeyId = /^(0x)?[0-9a-f]{8,64}$/i.test(raw);
+    const pattern = isKeyId ? `0x${raw.replace(/^0x/i, "")}` : raw;
 
     let keys;
+    let defaultKey = "";
     try {
-      keys = this.getSecretKeysForEmail(isKeyId ? null : email);
+      keys = await lazy.GnuPGAgent.listSecretKeys(pattern);
+      if (!isKeyId) {
+        defaultKey = await lazy.GnuPGAgent.configuredDefaultKey();
+      }
     } catch (ex) {
-      console.warn("Listing GnuPG secret keys failed", ex);
+      console.warn("Asking GnuPG for its key selection failed", ex);
       return null;
     }
 
-    const usable = subkey =>
-      !(subkey.bitfield &
-        (GPGMELib.gpgme_key_t_revoked |
-          GPGMELib.gpgme_key_t_expired |
-          GPGMELib.gpgme_key_t_disabled |
-          GPGMELib.gpgme_key_t_invalid));
+    const usable = key =>
+      !/^[redi]/.test(key.validity || "") &&
+      !(key.capabilities || "").includes("D");
+    const canSign = key => /[sS]/.test(key.capabilities || "");
 
-    for (const key of keys) {
-      if (wantedId) {
-        const keyFpr = key.fpr.toUpperCase();
-        const matches =
-          keyFpr == wantedId ||
-          keyFpr.endsWith(wantedId) ||
-          key.subkeys.some(sub => sub.keyid == wantedId || sub.fpr == wantedId);
-        if (!matches) {
-          continue;
-        }
-      }
-
-      // A subkey that can sign, unless it is unusable. Newer than the primary
-      // key and, for a key with a signing subkey, the only one that can sign.
-      // gpgme lists the primary key as the first subkey entry, so skip it
-      // when looking for a signing subkey.
-      const signingSub = key.subkeys
-        .filter(sub => sub.keyid != key.keyid && sub.fpr != key.fpr)
-        .find(
-          sub => sub.bitfield & GPGMELib.gpgme_subkey_can_sign && usable(sub)
+    const identityMatches = key => {
+      if (isKeyId) {
+        const wanted = raw.replace(/^0x/i, "").toUpperCase();
+        const fpr = (key.fpr || "").toUpperCase();
+        return (
+          fpr.endsWith(wanted) ||
+          (key.keyId || "").toUpperCase().endsWith(wanted) ||
+          key.subkeys.some(
+            sub =>
+              (sub.fpr || "").toUpperCase().endsWith(wanted) ||
+              (sub.keyId || "").toUpperCase().endsWith(wanted)
+          )
         );
-      if (signingSub) {
-        return signingSub.keyid;
       }
-      // No usable signing subkey: use the primary key if it can sign.
-      if (key.bitfield & GPGMELib.gpgme_key_t_can_sign && usable(key)) {
-        return key.keyid;
-      }
+      const wanted = this.emailFromIdentity(raw);
+      return key.uids.some(uid => uid.email && uid.email == wanted);
+    };
+
+    const candidates = keys.filter(key => usable(key) && identityMatches(key));
+
+    const preferred = defaultKey
+      ? candidates.find(key => this.keyMatchesIdentifier(key, defaultKey))
+      : null;
+    if (preferred && (canSign(preferred) || this.signingSubkey(preferred))) {
+      return this.signingKeyRecord(preferred, "default-key");
     }
-    return null;
+
+    const first = candidates.find(
+      key => canSign(key) || this.signingSubkey(key)
+    );
+    if (!first) {
+      return null;
+    }
+    return this.signingKeyRecord(first, "gnupg-order");
+  },
+
+  /**
+   * The address part of an identity string.
+   *
+   * @param {string} identity - An address, or "Name <address>".
+   * @returns {string} The address in lower case.
+   */
+  emailFromIdentity(identity) {
+    const match = /<([^<>]+)>/.exec(identity);
+    return (match ? match[1] : identity).trim().toLowerCase();
+  },
+
+  /**
+   * Whether a key record from gpg's listing is the one an identifier names.
+   *
+   * The identifier arrives from gpg.conf, where it may be a fingerprint, a
+   * key id, an address, or "Name <address>". Only the forms that name a key
+   * uniquely are accepted: a match on a short suffix or on an address is
+   * enough, since that is all `--default-key` needs.
+   *
+   * @param {object} key - A record from GnuPGAgent.listSecretKeys().
+   * @param {string} identifier - The configured identifier.
+   * @returns {boolean} True when the identifier names this key.
+   */
+  keyMatchesIdentifier(key, identifier) {
+    const wanted = identifier.trim();
+    if (!wanted) {
+      return false;
+    }
+
+    // Only a value that is entirely hexadecimal can name a key by id;
+    // stripping the 0x prefix must not touch a fingerprint that starts with 0.
+    const stripped = wanted.replace(/^0x/i, "");
+    if (/^[0-9a-f]{8,64}$/i.test(stripped)) {
+      const compact = stripped.toUpperCase();
+      return (
+        (key.fpr || "").toUpperCase().endsWith(compact) ||
+        (key.keyId || "").toUpperCase().endsWith(compact)
+      );
+    }
+
+    const email = this.emailFromIdentity(wanted);
+    if (email.includes("@")) {
+      return key.uids.some(uid => uid.email == email);
+    }
+    return key.uids.some(uid => uid.uid == wanted);
+  },
+
+  /**
+   * The usable signing subkey of a key, when it has one.
+   *
+   * @param {object} key - A record from GnuPGAgent.listSecretKeys().
+   * @returns {?object} The subkey record, or null.
+   */
+  signingSubkey(key) {
+    return (
+      key.subkeys.find(
+        sub =>
+          /[sS]/.test(sub.capabilities || "") &&
+          !(sub.capabilities || "").includes("D") &&
+          !/^[redi]/.test(sub.validity || "")
+      ) || null
+    );
+  },
+
+  /**
+   * Build the answer for a chosen key, preferring the signing subkey.
+   *
+   * @param {object} key - A record from GnuPGAgent.listSecretKeys().
+   * @param {string} source - Which of gpg's rules chose it.
+   * @returns {object} { keyId, fpr, source }.
+   */
+  signingKeyRecord(key, source) {
+    const sub = this.signingSubkey(key);
+    if (sub) {
+      return { keyId: sub.keyId, fpr: sub.fpr || key.fpr, source };
+    }
+    return { keyId: key.keyId, fpr: key.fpr, source };
   },
 
   /**
@@ -491,7 +599,11 @@ export var GPGME = {
         if (!signingKeyId) {
           throw new Error("missing signing key for encrypted and signed data");
         }
-        const signerHandle = this._getKeyHandle(ctx, { fpr: signingKeyId }, true);
+        const signerHandle = this._getKeyHandle(
+          ctx,
+          { fpr: signingKeyId },
+          true
+        );
         if (!signerHandle) {
           return null;
         }

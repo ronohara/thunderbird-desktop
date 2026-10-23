@@ -17,6 +17,9 @@ tags = ["openpgp"]
 ["test_externalGnuPGSigning.js"]
 skip-if = ["os != 'linux'"]
 
+["test_externalGnuPGPinentry.js"]
+skip-if = ["os != 'linux'"]
+
 ["test_externalSigningKey.js"]
 
 ["test_integrityProtection.js"]
@@ -33,6 +36,9 @@ run-if = ["nightly_build"]
 ["test_importGuard.js"]
 
 ["test_importPackets.js"]
+
+["test_keySelectionDelegation.js"]
+skip-if = ["os != 'linux'"]
 
 ["test_keyPrecedence.js"]
 
