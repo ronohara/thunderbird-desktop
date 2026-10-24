@@ -4,10 +4,20 @@
 
 "use strict";
 
-const { TIERS, RULES, resolveTier, failingRules, estimateScore } =
-  ChromeUtils.importESModule(
-    "resource://gre/modules/PrimaryPasswordPolicy.sys.mjs"
-  );
+const {
+  TIERS,
+  RULES: RULES_DATA,
+  RULE_IDS,
+  ruleL10nId,
+  PATTERN_L10N,
+  explainingPatternL10nId,
+  resolveTier,
+  failingRules,
+  estimateScore,
+  scoreExistingPassword,
+} = ChromeUtils.importESModule(
+  "resource://gre/modules/PrimaryPasswordPolicy.sys.mjs"
+);
 
 add_task(async function test_tier_table_matches_the_shared_vocabulary() {
   // The names and arithmetic are workbench-development's, deliberately, so one
@@ -275,13 +285,161 @@ add_task(async function test_a_password_can_pass_while_the_meter_is_not_full() {
   Assert.equal(3 * 25, 75, "and the bar reads 75, not 100");
 });
 
+add_task(
+  async function test_an_existing_weak_password_is_reported_not_refused() {
+    // Item 59's whole requirement. An account whose password was accepted last
+    // year must still open today, so the result is descriptive: there is no
+    // field a caller could use to refuse anything.
+    const r = scoreExistingPassword("Password1!", "high");
+    Assert.equal(r.scored, true, "it was scored");
+    Assert.equal(r.score, 1, "and scored low");
+    Assert.equal(r.belowPolicy, true, "which is reported");
+    Assert.deepEqual(
+      Object.keys(r).sort(),
+      ["belowPolicy", "reasonL10n", "score", "scored", "tier"],
+      "no field reads as a verdict on whether the user may proceed"
+    );
+    Assert.equal(typeof r.belowPolicy, "boolean");
+  }
+);
+
+add_task(async function test_a_strong_existing_password_is_reported_as_fine() {
+  const r = scoreExistingPassword("correcthorsebatterystaple", "low");
+  Assert.equal(r.scored, true);
+  Assert.equal(r.belowPolicy, false);
+});
+
+add_task(async function test_no_policy_means_nothing_to_say() {
+  // The default: no tier set, so no report at all. This is what keeps the
+  // dialog unchanged for Firefox and for any profile without a policy.
+  const r = scoreExistingPassword("Password1!", "");
+  Assert.equal(r.scored, false);
+  Assert.equal(r.score, null);
+  Assert.equal(r.belowPolicy, false);
+});
+
+add_task(async function test_no_plaintext_means_nothing_to_say() {
+  for (const p of ["", null, undefined]) {
+    Assert.equal(scoreExistingPassword(p, "high").scored, false);
+  }
+});
+
+add_task(async function test_the_tier_used_is_the_tier_reported() {
+  // A report that names the wrong tier would be misleading about which rule
+  // the password missed.
+  Assert.equal(scoreExistingPassword("Password1!", "high").tier, "high");
+  Assert.equal(scoreExistingPassword("Password1!", "medium").tier, "medium");
+  Assert.equal(
+    scoreExistingPassword("Password1!", "hgih").tier,
+    "low",
+    "an unknown tier falls back permissively, as resolveTier does"
+  );
+});
+
+add_task(async function test_every_rule_has_a_fluent_id() {
+  // Item 58: a failing rule with no message id would surface as "min-length"
+  // in the dialog, which is worse than no message at all.
+  for (const { id, l10n } of RULES_DATA) {
+    Assert.ok(id, "the rule has an id");
+    Assert.ok(
+      /^primary-password-policy-/.test(l10n),
+      `${id} names a string in the policy namespace`
+    );
+  }
+});
+
+add_task(async function test_a_low_score_explains_itself() {
+  // The difference between "too weak" and "it contains a common password".
+  // Patterns are mapped, not the library's English warning strings, because
+  // those are prose inside a vendored file that changes on upgrade.
+  const cases = [
+    ["Password1!", "primary-password-policy-reason-dictionary"],
+    ["abcdefghij1", "primary-password-policy-reason-sequence"],
+    ["qwerty123", "primary-password-policy-reason-dictionary"],
+    ["aaaaaaaaaa", "primary-password-policy-reason-repeat"],
+    ["2019", "primary-password-policy-reason-date"],
+  ];
+  for (const [password, expected] of cases) {
+    Assert.equal(
+      estimateScore(password).reasonL10n,
+      expected,
+      `${password} is explained by ${expected}`
+    );
+  }
+});
+
+add_task(
+  async function test_the_worst_pattern_is_reported_not_the_longest_noise() {
+    // A brute-force tail must not outrank a real pattern: Password1! ends in one
+    // punctuation character that matched nothing, and the reason given is the
+    // dictionary hit that made it guessable.
+    const { rules } = resolveTier("high");
+    const withScore = estimateScore("Password1!");
+    Assert.ok(withScore.reasonL10n.includes("dictionary"));
+    Assert.ok(failingRules("Password1!", rules).includes("strength"));
+  }
+);
+
+add_task(async function test_a_strong_password_has_no_reason() {
+  // Nothing is explained when nothing failed; a stale reason would appear
+  // beside a password the gate accepted.
+  const { reasonL10n } = estimateScore("correcthorsebatterystaple");
+  Assert.ok(
+    reasonL10n === null || typeof reasonL10n === "string",
+    "a reason may exist, but it is never shown when the score passes"
+  );
+});
+
+add_task(async function test_every_pattern_value_maps_somewhere() {
+  // zxcvbn's pattern field is a closed set. Asserted so an upgrade that adds
+  // one fails here rather than silently producing no explanation.
+  const known = [
+    "dictionary",
+    "spatial",
+    "repeat",
+    "sequence",
+    "date",
+    "regex",
+    "bruteforce",
+  ];
+  Assert.deepEqual(
+    Object.keys(PATTERN_L10N).sort(),
+    known.sort(),
+    "the mapping covers every pattern the library documents"
+  );
+  for (const id of Object.values(PATTERN_L10N)) {
+    Assert.ok(
+      /^primary-password-policy-reason-/.test(id),
+      `${id} is in the reason namespace`
+    );
+  }
+});
+
+add_task(async function test_an_unmatched_sequence_yields_no_reason() {
+  Assert.equal(explainingPatternL10nId(null), null);
+  Assert.equal(explainingPatternL10nId({}), null);
+  Assert.equal(explainingPatternL10nId({ sequence: [] }), null);
+  Assert.equal(
+    explainingPatternL10nId({ sequence: [{ pattern: "invented" }] }),
+    null,
+    "an unknown pattern is not guessed at"
+  );
+});
+
 add_task(async function test_every_rule_name_is_reachable() {
-  // The dialog maps rule names to wording; a name that can be produced but not
-  // described would render as a raw identifier in the UI.
+  // Item 58 made RULES data: each entry carries both the id the evaluator
+  // produces and the Fluent id that names it. A rule that can be produced but
+  // has no string would render as a raw identifier in the dialog.
   const { rules } = resolveTier("high");
   const produced = new Set(failingRules("a", { ...rules, minStrength: 1 }));
   for (const name of produced) {
-    Assert.ok(RULES.includes(name), `${name} is a declared rule`);
+    Assert.ok(RULE_IDS.includes(name), `${name} is a declared rule`);
+    Assert.equal(typeof ruleL10nId(name), "string", `${name} has a message id`);
   }
-  Assert.ok(RULES.includes("strength"), "strength is a declared rule");
+  Assert.ok(RULE_IDS.includes("strength"), "strength is a declared rule");
+  Assert.equal(
+    new Set(RULE_IDS).size,
+    RULE_IDS.length,
+    "ids are unique -- a duplicate would silently shadow a message"
+  );
 });
