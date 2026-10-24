@@ -3028,13 +3028,19 @@ export var RNP = {
     let subKeyBits = 0;
     const primaryKeyCurve = null;
     let subKeyCurve = null;
+    // The signing subkey's algorithm, separate from the primary's because the
+    // primary no longer signs. Its curve is left to the library, exactly as the
+    // primary's is -- naming it fails, and the default for eddsa is Ed25519.
+    let signingKeyType;
+    const signingKeyCurve = null;
     let expireSeconds = 0;
 
     if (keyType == "RSA") {
-      primaryKeyType = subKeyType = "rsa";
+      primaryKeyType = subKeyType = signingKeyType = "rsa";
       primaryKeyBits = subKeyBits = keyBits;
     } else if (keyType == "ECC") {
       primaryKeyType = "eddsa";
+      signingKeyType = "eddsa";
       subKeyType = "ecdh";
       subKeyCurve = "Curve25519";
     } else {
@@ -3054,6 +3060,22 @@ export var RNP = {
 
     if (RNPLib.rnp_op_generate_set_userid(genOp, userId)) {
       throw new Error("rnp_op_generate_set_userid failed");
+    }
+
+    // Certify-only primary, as `gpg --quick-generate-key … cert` produces.
+    // Signing and encryption go to subkeys, so the certificate key is not in
+    // the path of every signature and a subkey can be rotated without
+    // replacing the identity.
+    //
+    // clear_usage first, then add: `add_usage` *adds* to the algorithm's
+    // defaults rather than replacing them, so adding "certify" to an eddsa
+    // primary would leave it able to sign as well. Measured: without the
+    // clear, the primary reports "sc".
+    if (RNPLib.rnp_op_generate_clear_usage(genOp)) {
+      throw new Error("rnp_op_generate_clear_usage primary failed");
+    }
+    if (RNPLib.rnp_op_generate_add_usage(genOp, "certify")) {
+      throw new Error("rnp_op_generate_add_usage certify failed");
     }
 
     if (passphrase != null && passphrase.length) {
@@ -3092,6 +3114,80 @@ export var RNP = {
     newKeyFingerprint = this.getFingerprintFromHandle(primaryKey);
     newKeyId = this.getKeyIDFromHandle(primaryKey);
 
+    // Signing subkey, then the encryption one below. Two subkeys is what GnuPG
+    // produces for a certify-only primary; this block is the one that did not
+    // exist before, because the primary used to do the signing.
+    //
+    // The op slot is reused exactly as the encryption block reuses it:
+    // rnp_op_generate_destroy releases the op and rnp_op_generate_subkey_create
+    // writes a fresh one into the same slot. A restructure that gave each
+    // subkey its own rnp_key_handle crashed inside rnp's allocator -- SIGSEGV
+    // in arena_dalloc from rnp_op_generate_destroy -- so the existing shape is
+    // kept deliberately.
+    if (
+      RNPLib.rnp_op_generate_subkey_create(
+        genOp.address(),
+        RNPLib.ffi,
+        primaryKey,
+        signingKeyType
+      )
+    ) {
+      throw new Error("rnp_op_generate_subkey_create signing failed");
+    }
+
+    // Cleared first for the same reason as the primary: add_usage adds to the
+    // algorithm's defaults, and an RSA subkey's defaults include encryption --
+    // so without the clear, the signing subkey reports "se" and a key-generation
+    // test cannot tell which subkey is meant to do what.
+    if (RNPLib.rnp_op_generate_clear_usage(genOp)) {
+      throw new Error("rnp_op_generate_clear_usage signing failed");
+    }
+    if (RNPLib.rnp_op_generate_add_usage(genOp, "sign")) {
+      throw new Error("rnp_op_generate_add_usage sign failed");
+    }
+
+    if (passphrase != null && passphrase.length) {
+      if (RNPLib.rnp_op_generate_set_protection_password(genOp, passphrase)) {
+        throw new Error("rnp_op_generate_set_protection_password failed");
+      }
+    }
+
+    if (subKeyBits != 0) {
+      if (RNPLib.rnp_op_generate_set_bits(genOp, subKeyBits)) {
+        throw new Error("rnp_op_generate_set_bits signing failed");
+      }
+    }
+
+    if (signingKeyCurve != null) {
+      if (RNPLib.rnp_op_generate_set_curve(genOp, signingKeyCurve)) {
+        throw new Error("rnp_op_generate_set_curve signing failed");
+      }
+    }
+
+    if (RNPLib.rnp_op_generate_set_expiration(genOp, expireSeconds)) {
+      throw new Error("rnp_op_generate_set_expiration signing failed");
+    }
+
+    let signingUnlocked = false;
+    try {
+      if (passphrase != null && passphrase.length) {
+        if (RNPLib.rnp_key_unlock(primaryKey, passphrase)) {
+          throw new Error("rnp_key_unlock failed");
+        }
+        signingUnlocked = true;
+      }
+
+      if (RNPLib.rnp_op_generate_execute(genOp)) {
+        throw new Error("rnp_op_generate_execute signing failed");
+      }
+    } finally {
+      if (signingUnlocked) {
+        RNPLib.rnp_key_lock(primaryKey);
+      }
+    }
+
+    RNPLib.rnp_op_generate_destroy(genOp);
+
     if (
       RNPLib.rnp_op_generate_subkey_create(
         genOp.address(),
@@ -3101,6 +3197,16 @@ export var RNP = {
       )
     ) {
       throw new Error("rnp_op_generate_subkey_create primary failed");
+    }
+
+    // And the same again, so the encryption subkey is encryption-only. An RSA
+    // key's default capabilities include signing, and a subkey silently able to
+    // sign is not the structure this produces.
+    if (RNPLib.rnp_op_generate_clear_usage(genOp)) {
+      throw new Error("rnp_op_generate_clear_usage encryption failed");
+    }
+    if (RNPLib.rnp_op_generate_add_usage(genOp, "encrypt")) {
+      throw new Error("rnp_op_generate_add_usage encrypt failed");
     }
 
     if (passphrase != null && passphrase.length) {

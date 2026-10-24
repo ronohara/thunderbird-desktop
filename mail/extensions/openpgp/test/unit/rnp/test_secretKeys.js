@@ -59,10 +59,21 @@ add_task(async function testSecretKeys() {
     "EnigmailKeyRing.getKeyById should return an object with a secret key"
   );
 
-  Assert.ok(
-    keyObj.iSimpleOneSubkeySameExpiry(),
-    "check iSimpleOneSubkeySameExpiry should succeed"
-  );
+  // Item 60 changed the structure: a generated key is now a certify-only
+  // primary with a signing subkey and an encryption subkey, so the old
+  // "simple, one subkey, same expiry" predicate is false by design -- it drives
+  // the change-expiry dialog's simple/advanced mode, and two subkeys belong in
+  // advanced mode. What this test actually guards is that expiry can still be
+  // changed on such a key, so the precondition is asserted in the new form: two
+  // subkeys carrying the same expiry as the primary.
+  Assert.equal(keyObj.subKeys.length, 2, "the key has two subkeys");
+  for (const sk of keyObj.subKeys) {
+    Assert.equal(
+      sk.expiryTime,
+      keyObj.expiryTime,
+      "and each subkey expires with the primary"
+    );
+  }
 
   const later = new Date();
   later.setDate(later.getDate() + 100);

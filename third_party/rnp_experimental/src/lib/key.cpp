@@ -985,7 +985,14 @@ Key::usable_for(pgp_op_t op, bool if_secret) const
 {
     switch (op) {
     case PGP_OP_ADD_SUBKEY:
-        return is_primary() && can_sign() && (if_secret || has_secret());
+        /* A subkey binding signature is a certification, not a data
+         * signature: RFC 4880 s5.2.3.21 gives certify and sign separate bits,
+         * and a certify-only primary is the structure GnuPG recommends so the
+         * certificate key can stay offline. Testing can_sign() alone refused
+         * those keys. can_sign() is still accepted so nothing that worked
+         * before stops working. */
+        return is_primary() && (can_certify() || can_sign()) &&
+               (if_secret || has_secret());
     case PGP_OP_SIGN:
         return can_sign() && valid() && (if_secret || has_secret());
     case PGP_OP_CERTIFY:

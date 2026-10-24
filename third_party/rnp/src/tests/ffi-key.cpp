@@ -646,6 +646,60 @@ TEST_F(rnp_tests, test_ffi_key_generate_misc)
     assert_rnp_success(rnp_ffi_destroy(ffi));
 }
 
+TEST_F(rnp_tests, test_ffi_key_generate_certify_only_primary)
+{
+    rnp_ffi_t ffi = NULL;
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+
+    /* A certify-only primary, as `gpg --quick-generate-key ... cert` produces.
+     * clear_usage is needed first because add_usage only adds to the
+     * algorithm's default set, so an ECDSA primary would otherwise also be
+     * able to sign. */
+    rnp_op_generate_t op = NULL;
+    assert_rnp_success(rnp_op_generate_create(&op, ffi, "ECDSA"));
+    assert_rnp_success(rnp_op_generate_set_curve(op, "NIST P-256"));
+    assert_rnp_success(rnp_op_generate_set_userid(op, "certify-only"));
+    assert_rnp_success(rnp_op_generate_clear_usage(op));
+    assert_rnp_success(rnp_op_generate_add_usage(op, "certify"));
+    assert_rnp_success(rnp_op_generate_set_expiration(op, 0));
+    assert_rnp_success(rnp_op_generate_execute(op));
+    rnp_key_handle_t primary = NULL;
+    assert_rnp_success(rnp_op_generate_get_key(op, &primary));
+    rnp_op_generate_destroy(op);
+
+    bool flag = true;
+    assert_rnp_success(rnp_key_allows_usage(primary, "certify", &flag));
+    assert_true(flag);
+    flag = true;
+    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
+    assert_false(flag);
+
+    /* Adding a signing subkey must succeed: the binding signature is a
+     * certification, and this primary can certify. */
+    rnp_op_generate_t subop = NULL;
+    assert_rnp_success(rnp_op_generate_subkey_create(&subop, ffi, primary, "ECDSA"));
+    assert_rnp_success(rnp_op_generate_set_curve(subop, "NIST P-256"));
+    assert_rnp_success(rnp_op_generate_add_usage(subop, "sign"));
+    assert_rnp_success(rnp_op_generate_set_expiration(subop, 0));
+    assert_rnp_success(rnp_op_generate_execute(subop));
+    rnp_key_handle_t subkey = NULL;
+    assert_rnp_success(rnp_op_generate_get_key(subop, &subkey));
+    rnp_op_generate_destroy(subop);
+
+    /* and the primary's own usage did not widen as a side effect */
+    flag = true;
+    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
+    assert_false(flag);
+
+    bool issub = false;
+    assert_rnp_success(rnp_key_is_sub(subkey, &issub));
+    assert_true(issub);
+
+    rnp_key_handle_destroy(subkey);
+    rnp_key_handle_destroy(primary);
+    assert_rnp_success(rnp_ffi_destroy(ffi));
+}
+
 TEST_F(rnp_tests, test_ffi_sec_key_offline_operations)
 {
     rnp_ffi_t ffi = NULL;

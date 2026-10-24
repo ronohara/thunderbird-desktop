@@ -1330,6 +1330,21 @@ function enableRNPLibJS() {
       ctypes.char.ptr
     ),
 
+    rnp_op_generate_clear_usage: librnp.declare(
+      "rnp_op_generate_clear_usage",
+      abi,
+      rnp_result_t,
+      rnp_op_generate_t
+    ),
+
+    rnp_op_generate_add_usage: librnp.declare(
+      "rnp_op_generate_add_usage",
+      abi,
+      rnp_result_t,
+      rnp_op_generate_t,
+      ctypes.char.ptr
+    ),
+
     rnp_op_generate_set_bits: librnp.declare(
       "rnp_op_generate_set_bits",
       abi,

@@ -23,6 +23,9 @@ vendoring:
   source-hosting: github
   tracking: commit
 
+  patches:
+    - ../patches/rnp_experimental/certify-only-primary-add-subkey.patch
+
   skip-vendoring-steps:
     - hg-add
     - spurious-check
