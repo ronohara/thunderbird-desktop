@@ -289,3 +289,21 @@ pref("mail.identity.default.e2etechpref", 0);
 // disable flowed text by default
 // TODO: pref("mailnews.send_plaintext_flowed", false);
 
+
+//
+// Key database derivation floor
+//
+
+// NSS derives the key protecting key4.db with PBKDF2-HMAC-SHA256. With a
+// Primary Password set it uses a compiled-in 10,000 iterations, which is far
+// cheaper to attack than a GnuPG keyring's own derivation. softoken reads
+// NSS_MIN_MP_PBE_ITERATION_COUNT from the environment on every PBE operation,
+// so the floor can be raised without patching NSS; MailGlue exports it at
+// app-startup, which is the last moment before NSS is initialised.
+//
+// 0 leaves NSS's own minimum in place. The shipped value is decided separately
+// (design 12.1, plan Item 74) so that the number lives in one place rather
+// than two that can disagree. Changing it re-encrypts an existing database
+// once, at the next unlock; attributes not yet re-encrypted stay readable at
+// their old count, so there is no all-or-nothing state.
+pref("mail.e2ee.primary_password_min_iteration_count", 0);

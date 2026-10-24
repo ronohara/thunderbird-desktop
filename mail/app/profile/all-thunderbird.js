@@ -1620,3 +1620,15 @@ pref("widget.macos.native-anchored-menus", false);
 
 // The color used to style primary buttons and elements.
 pref("mail.appearance.accentColor", "accent-color");
+
+// Primary Password policy tier. The tiers and their arithmetic are shared with
+// workbench-development, but the default differs deliberately: that project's
+// "medium" assumes a server rate-limits login attempts, and there is no server
+// here. An attacker holding key4.db guesses offline at the measured cost per
+// guess, so this build asks for "high" -- ten characters, all four classes.
+//
+// Read when the change-password dialog opens, so a value pushed by the
+// Preferences enterprise policy applies to the next change without a restart.
+// Empty means no policy, which is what Firefox and every other application
+// using toolkit's dialog get.
+pref("security.primary_password.policy.tier", "high");

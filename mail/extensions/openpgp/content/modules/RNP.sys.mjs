@@ -3,6 +3,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+// Imported directly rather than through a lazy getter: from this chrome://
+// module, defineESModuleGetters on this resource:/// module resolves to
+// undefined, while a direct import works. Verified in xpcshell with a probe.
+import { enforcePrimaryPassword } from "resource:///modules/PrimaryPassword.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -3452,6 +3456,26 @@ export var RNP = {
     if (pubkey && seckey) {
       throw new Error("Cannot import public and secret keys at the same time");
     }
+    // A secret key in the internal store is protected by the SDR key, which
+    // without a Primary Password is stretched once -- so importing one while
+    // there is no password hands the user a private key that anyone with the
+    // profile can read. Refuse here rather than warning, because a warning is
+    // dismissible and this is not.
+    //
+    // `enforcePrimaryPassword()` opens the change-password dialog itself and
+    // reports whether the user complied, which is what D7 requires: the
+    // refusal has to carry the route forward. It enforces the
+    // `PrimaryPassword: true` enterprise policy, so a profile with no policy
+    // is unaffected -- see design 12.5, which wants the stronger reading.
+    if (seckey && !enforcePrimaryPassword(win)) {
+      const refused = {};
+      refused.exitCode = 0;
+      refused.importedKeys = [];
+      refused.errorMsg = "";
+      refused.fingerprintsWithUnsupportedFeatures = [];
+      return refused;
+    }
+
     const permissive = !seckey; // permissive only for public keys
 
     /*

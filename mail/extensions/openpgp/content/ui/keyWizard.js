@@ -13,6 +13,9 @@ var { AppConstants } = ChromeUtils.importESModule(
 var { OpenPGPMasterpass } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/masterpass.sys.mjs"
 );
+var { enforcePrimaryPassword } = ChromeUtils.importESModule(
+  "resource:///modules/PrimaryPassword.sys.mjs"
+);
 var { EnigmailKey } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/key.sys.mjs"
 );
@@ -738,13 +741,33 @@ async function openPgpKeygenStart() {
 }
 
 async function openPgpKeygenConfirm() {
-  document.getElementById("openPgpKeygenConfirm").collapsed = true;
-  document.getElementById("openPgpKeygenProcess").removeAttribute("collapsed");
-
   const openPgpWarning = document.getElementById("openPgpWarning");
   const openPgpWarningText = document.getElementById(
     "openPgpWarningDescription"
   );
+
+  // A key generated here is protected by the SDR key, and without a Primary
+  // Password that key is stretched once -- so the private key is readable by
+  // anyone who can open the profile. The helper opens the change-password
+  // dialog and reports whether the user complied, which is the route forward
+  // D7 requires; refusing silently would block the action with nowhere to go.
+  //
+  // It enforces the `PrimaryPassword: true` enterprise policy, so a profile
+  // with no policy is unaffected. Design 12.5's stronger reading -- refuse
+  // whenever there is no password, policy or not -- is not implemented here
+  // and is recorded as a gap in the plan.
+  if (!enforcePrimaryPassword(window)) {
+    openPgpWarning.collapsed = false;
+    document.l10n.setAttributes(
+      openPgpWarningText,
+      "openpgp-keygen-error-primary-password"
+    );
+    return;
+  }
+
+  document.getElementById("openPgpKeygenConfirm").collapsed = true;
+  document.getElementById("openPgpKeygenProcess").removeAttribute("collapsed");
+
   openPgpWarning.collapsed = true;
 
   kGenerating = true;

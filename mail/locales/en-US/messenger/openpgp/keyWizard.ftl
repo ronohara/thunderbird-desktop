@@ -115,6 +115,10 @@ openpgp-keygen-error-core = Unable to initialize OpenPGP Core Service
 
 openpgp-keygen-error-failed = OpenPGP Key generation unexpectedly failed
 
+# Shown when key generation is refused because a Primary Password is required
+# to protect the new key and the user cancelled setting one.
+openpgp-keygen-error-primary-password = A Primary Password is required before generating a key. The new key would otherwise be readable by anyone who can open this profile.
+
 #   $key (String) - the ID of the newly generated OpenPGP key
 openpgp-keygen-error-revocation = OpenPGP Key created successfully, but failed to obtain revocation for key { $key }
 

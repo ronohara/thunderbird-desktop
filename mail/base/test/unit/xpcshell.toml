@@ -48,6 +48,16 @@ skip-if = [
 
 ["test_mozIconUtils.js"]
 
+["test_openPgpExposure.js"]
+
+["test_pbeIterationFloor.js"]
+
+["test_pbeStoredCount.js"]
+
+["test_primaryPasswordGate.js"]
+
+["test_primaryPasswordPolicy.js"]
+
 ["test_qrExport.js"]
 
 ["test_quoteSanitizer.js"]

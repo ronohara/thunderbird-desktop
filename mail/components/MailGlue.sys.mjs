@@ -48,6 +48,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   MailUsageTelemetry: "resource:///modules/MailUsageTelemetry.sys.mjs",
   OAuth2Providers: "resource:///modules/OAuth2Providers.sys.mjs",
   OsEnvironment: "resource://gre/modules/OsEnvironment.sys.mjs",
+  PBEIterationFloor: "resource:///modules/PBEIterationFloor.sys.mjs",
+  PBEStoredCount: "resource:///modules/PBEStoredCount.sys.mjs",
   PdfJs: "resource://pdf.js/PdfJs.sys.mjs",
   RemoteSecuritySettings:
     "resource://gre/modules/psm/RemoteSecuritySettings.sys.mjs",
@@ -497,6 +499,29 @@ MailGlue.prototype = {
           "extensions.lastAppVersion",
           "0"
         );
+
+        // Raise NSS's key-database derivation floor while it is still early
+        // enough to matter. app-startup is the one point where preferences
+        // are loaded and NSS has not been initialised: Thunderbird forces
+        // NSS up in nsXREDirProvider::DoStartup(), which runs after this
+        // category, when security.prompt_for_master_password_on_startup is
+        // set. Doing it anywhere later has no effect until the next start,
+        // and the failure is silent.
+        {
+          // Silent by default: MailGlue has no logger of its own, and this
+          // runs before the console service reports anything useful. The
+          // state is readable through currentPBEIterationFloor(), which is
+          // what a report should read rather than inferring from silence.
+          const { applied, value, previous } =
+            lazy.PBEIterationFloor.applyPBEIterationFloor();
+          if (applied && previous && previous !== String(value)) {
+            console.warn(
+              "PBE iteration floor: NSS_MIN_MP_PBE_ITERATION_COUNT was " +
+                `"${previous}", overridden by ` +
+                `${lazy.PBEIterationFloor.PREF}=${value}`
+            );
+          }
+        }
         break;
       case "command-line-startup": {
         // Check if this process is the developer toolbox process, and if it
@@ -567,6 +592,11 @@ MailGlue.prototype = {
       case "mail-startup-done":
         this._onFirstWindowLoaded();
         Services.obs.removeObserver(this, "mail-startup-done");
+        // NSS has initialised by now, and if a Primary Password is set the
+        // database has had its one chance to re-encrypt at the floor. Report
+        // the count actually stored, because a failed upgrade is swallowed --
+        // it looks exactly like a successful one from the outside.
+        this._reportStoredPbeCount();
         break;
       case "xpcom-shutdown":
         this._dispose();
@@ -798,6 +828,49 @@ MailGlue.prototype = {
           .getService(Ci.nsIApplicationUpdateService)
           .checkForBackgroundUpdates();
       }
+    }
+  },
+
+  /**
+   * Reads the iteration count stored in key4.db and says what it means.
+   *
+   * NSS re-encrypts a database at a writable login when its stored count is
+   * below the floor, and swallows a failure (`PORT_SetError(0)` with the
+   * comment that login already succeeded). So a profile that failed to
+   * upgrade is indistinguishable from one that succeeded unless the count is
+   * read back -- which is why this exists, and why it reports rather than
+   * assumes.
+   *
+   * Silent unless something is wrong: a warning when the stored count is
+   * below the floor, and nothing at all for the ordinary cases (no password,
+   * or already at the floor). The result is left on the instance so a later
+   * caller -- the OpenPGP settings pane -- can show it without duplicating
+   * the read.
+   *
+   * @returns {Promise<void>}
+   */
+  async _reportStoredPbeCount() {
+    try {
+      const floor = lazy.PBEIterationFloor.currentPBEIterationFloor();
+      const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
+      this.pbeStoredCount = await lazy.PBEStoredCount.reportStoredCount(
+        profileDir,
+        floor
+      );
+
+      if (
+        this.pbeStoredCount.status === lazy.PBEStoredCount.Status.BelowFloor
+      ) {
+        console.warn(
+          `PBE iteration floor: key4.db is stored at ` +
+            `${this.pbeStoredCount.stored} iterations, below the floor of ` +
+            `${floor}. The upgrade at login did not happen; the database is ` +
+            `weaker than the preference asks for.`
+        );
+      }
+    } catch (ex) {
+      // A report about the key database must never be a reason startup fails.
+      console.error("PBE iteration floor: stored count not read", ex);
     }
   },
 
