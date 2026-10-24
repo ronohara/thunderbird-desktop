@@ -65,13 +65,22 @@ add_task(async function testSecretKeys() {
   // the change-expiry dialog's simple/advanced mode, and two subkeys belong in
   // advanced mode. What this test actually guards is that expiry can still be
   // changed on such a key, so the precondition is asserted in the new form: two
-  // subkeys carrying the same expiry as the primary.
+  // subkeys, each expiring with the primary.
+  //
+  // Not to the second, though. A subkey's expiry is its own creation time plus
+  // the requested duration, and the subkeys are generated after the primary, so
+  // they land a moment later -- measured 1795471041 against 1795471040. Exact
+  // equality therefore fails at random; the tolerance is the honest assertion,
+  // and it still catches what matters, since any real defect here is measured
+  // in days (a missing expiry, or a different duration on one subkey).
   Assert.equal(keyObj.subKeys.length, 2, "the key has two subkeys");
   for (const sk of keyObj.subKeys) {
-    Assert.equal(
-      sk.expiryTime,
-      keyObj.expiryTime,
-      "and each subkey expires with the primary"
+    Assert.notEqual(sk.expiryTime, 0, "each subkey has an expiry");
+    Assert.lessOrEqual(
+      Math.abs(sk.expiryTime - keyObj.expiryTime),
+      10,
+      "and expires with the primary, within the seconds generation takes: " +
+        `${sk.expiryTime} vs ${keyObj.expiryTime}`
     );
   }
 

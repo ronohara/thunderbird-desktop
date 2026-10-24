@@ -4230,7 +4230,29 @@ export var RNP = {
     return null;
   },
 
-  getSuitableSubkey(primary, usage, publicKeyUsageOnly = false) {
+  /**
+   * Find the subkey to use for a purpose.
+   *
+   * Called with no `preferredFpr` this is the automatic rule: the newest
+   * usable subkey, which is what GnuPG does when no key is named.
+   *
+   * @param {rnp_key_handle_t} primary - RNP key handle of the primary key.
+   * @param {string} usage - "sign" or "encrypt".
+   * @param {boolean} [publicKeyUsageOnly=false] - Test the public usage
+   *   attributes only, for externally managed keys.
+   * @param {?string} [preferredFpr=null] - Fingerprint of the subkey the user
+   *   named, or null to choose automatically. A named subkey that is absent or
+   *   unusable yields null, never a substitute: refusing is the caller's
+   *   decision, but a silent substitution would sign with a key the identity
+   *   does not name, which is the failure this whole mechanism exists to stop.
+   * @returns {?rnp_key_handle_t} A handle the caller must destroy, or null.
+   */
+  getSuitableSubkey(
+    primary,
+    usage,
+    publicKeyUsageOnly = false,
+    preferredFpr = null
+  ) {
     const sub_count = new lazy.ctypes.size_t();
     if (RNPLib.rnp_key_get_subkey_count(primary, sub_count.address())) {
       throw new Error("rnp_key_get_subkey_count failed");
@@ -4245,6 +4267,17 @@ export var RNP = {
       let sub_handle = new RNPLib.rnp_key_handle_t();
       if (RNPLib.rnp_key_get_subkey_at(primary, i, sub_handle.address())) {
         throw new Error("rnp_key_get_subkey_at failed");
+      }
+
+      // A subkey named by the user is the only candidate. It still has to
+      // pass every check below, so naming one cannot make an unusable subkey
+      // usable -- it can only stop another being chosen in its place.
+      if (preferredFpr) {
+        const fpr = this.getFingerprintFromHandle(sub_handle);
+        if (fpr.toUpperCase() != preferredFpr.toUpperCase()) {
+          RNPLib.rnp_key_handle_destroy(sub_handle);
+          continue;
+        }
       }
       let skip =
         this.isBadKey(sub_handle, primary, null) ||
@@ -4905,11 +4938,28 @@ export var RNP = {
           let signingKeyTrackerReference = senderKeyTracker;
 
           // Prefer usable subkeys, because they are always newer
-          // (or same age) as primary key.
+          // (or same age) as primary key -- unless the user has named one.
+          const namedSubkeyFpr = args.signingSubkeyFpr || null;
           const usableSubKeyHandle = this.getSuitableSubkey(
             senderKeyTracker.getHandle(),
-            "sign"
+            "sign",
+            false,
+            namedSubkeyFpr
           );
+
+          // A named subkey that cannot be used is refused, not replaced.
+          // Falling back would sign with a key the identity does not name,
+          // and the user would have no way to tell -- which is the class of
+          // silent substitution the external path already refuses to do.
+          if (!usableSubKeyHandle && namedSubkeyFpr) {
+            throw new Error(
+              `the signing subkey configured for this identity ` +
+                `(${namedSubkeyFpr}) is missing, expired, revoked or not ` +
+                `a signing subkey; refusing rather than signing with a ` +
+                `different key`
+            );
+          }
+
           if (
             !usableSubKeyHandle &&
             !this.isKeyUsableFor(senderKeyTracker.getHandle(), "sign")
@@ -4928,6 +4978,18 @@ export var RNP = {
           await signingKeyTrackerReference.unlock();
           if (!signingKeyTrackerReference.isUnlocked()) {
             throw new Error("failed to unlock the signing key");
+          }
+
+          // Report what actually signed, the way `gpg --list-packets` does.
+          // Without this a rotated subkey is indistinguishable from the one
+          // it replaced, so the rotation is invisible to the user who asked
+          // for it. This is the subkey when one was used and the primary's
+          // fingerprint when the primary signed, which is itself the answer
+          // to "why is my new subkey not being used?".
+          if (resultStatus && typeof resultStatus == "object") {
+            resultStatus.senderSigningKeyFpr =
+              signingKeyTrackerReference.getFingerprint();
+            resultStatus.senderSigningSubkeyNamed = namedSubkeyFpr || "";
           }
 
           if (args.encrypt) {
@@ -6269,37 +6331,10 @@ export var RNP = {
       return false;
     }
 
-    // The secret key material of the primary key is required, because
-    // the new subkey must be bound to the primary key by a signature.
-    if (
-      !RNPLib.getSecretAvailableFromHandle(primaryHandle) ||
-      !RNPLib.isSecretKeyMaterialAvailable(primaryHandle)
-    ) {
-      lazy.log.warn("secret key material not available");
+    // Everything that applies to adding any subkey at all: secret material
+    // present, primary not revoked, primary not expired.
+    if (!this.canAddSubkey(primaryHandle)) {
       return false;
-    }
-
-    const isRevoked = new lazy.ctypes.bool();
-    if (RNPLib.rnp_key_is_revoked(primaryHandle, isRevoked.address())) {
-      throw new Error("rnp_key_is_revoked failed");
-    }
-    if (isRevoked.value) {
-      lazy.log.warn("primary key is revoked");
-      return false;
-    }
-
-    // An expired primary key would produce an unusable subkey, and we
-    // couldn't derive an expiration date for the new subkey either.
-    const expiration = new lazy.ctypes.uint32_t();
-    if (RNPLib.rnp_key_get_expiration(primaryHandle, expiration.address())) {
-      throw new Error("rnp_key_get_expiration failed");
-    }
-    if (expiration.value) {
-      const created = this.getKeyCreatedValueFromHandle(primaryHandle);
-      if (created + expiration.value <= Math.floor(Date.now() / 1000)) {
-        lazy.log.warn("primary key is expired");
-        return false;
-      }
     }
 
     const version = new lazy.ctypes.uint32_t();
@@ -6396,29 +6431,148 @@ export var RNP = {
   },
 
   /**
-   * Add a v4 post-quantum (ML-KEM-768+X25519) encryption subkey to the
-   * given primary key. The primary key is unlocked on demand, which may
-   * prompt the user for a passphrase. The new subkey is protected with
-   * the same passphrase that protects the primary key.
+   * Test whether any subkey may be added to the given primary key, ignoring
+   * which kind of subkey is wanted. This is the policy shared by every
+   * add-subkey path; both the UI and the RNP methods must use it.
    *
-   * @param {string} primaryFpr - Fingerprint of the primary key.
-   * @param {integer} expirySeconds - Seconds until the new subkey
-   *   expires, or 0 if it should never expire.
-   * @returns {Promise<boolean>} - true if a subkey was added, false if
-   *   the preconditions weren't met or the user cancelled.
+   * @param {rnp_key_handle_t} primaryHandle - Handle of a primary key.
+   * @returns {boolean} - true if a subkey may be added
    */
-  async addV4PQCEncryptionSubkey(primaryFpr, expirySeconds) {
-    if (!Number.isInteger(expirySeconds) || expirySeconds < 0) {
-      throw new Error(`invalid expirySeconds ${expirySeconds}`);
+  canAddSubkey(primaryHandle) {
+    // The secret key material of the primary key is required, because
+    // the new subkey must be bound to the primary key by a signature.
+    if (
+      !RNPLib.getSecretAvailableFromHandle(primaryHandle) ||
+      !RNPLib.isSecretKeyMaterialAvailable(primaryHandle)
+    ) {
+      lazy.log.warn("secret key material not available");
+      return false;
     }
 
+    const isRevoked = new lazy.ctypes.bool();
+    if (RNPLib.rnp_key_is_revoked(primaryHandle, isRevoked.address())) {
+      throw new Error("rnp_key_is_revoked failed");
+    }
+    if (isRevoked.value) {
+      lazy.log.warn("primary key is revoked");
+      return false;
+    }
+
+    // An expired primary key would produce an unusable subkey, and we
+    // couldn't derive an expiration date for the new subkey either.
+    const expiration = new lazy.ctypes.uint32_t();
+    if (RNPLib.rnp_key_get_expiration(primaryHandle, expiration.address())) {
+      throw new Error("rnp_key_get_expiration failed");
+    }
+    if (expiration.value) {
+      const created = this.getKeyCreatedValueFromHandle(primaryHandle);
+      if (created + expiration.value <= Math.floor(Date.now() / 1000)) {
+        lazy.log.warn("primary key is expired");
+        return false;
+      }
+    }
+
+    return true;
+  },
+
+  /**
+   * Like canAddSubkey, but for a fingerprint.
+   * Returns false, rather than throwing, if the key cannot be found.
+   *
+   * @param {string} fpr - Fingerprint of a primary key, without "0x".
+   * @returns {boolean} - true if a subkey may be added
+   */
+  canAddSubkeyByFpr(fpr) {
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(
+      RNPLib.ffi,
+      `0x${fpr}`
+    );
+    if (!handle || handle.isNull()) {
+      return false;
+    }
+    try {
+      return this.canAddSubkey(handle);
+    } finally {
+      RNPLib.rnp_key_handle_destroy(handle);
+    }
+  },
+
+  /**
+   * Choose the algorithm for a new subkey from the primary key's own, so a
+   * replaced subkey is the same kind as the one it replaces. The curve for a
+   * signing key is left unset, because the library's default for eddsa is
+   * Ed25519 and naming it fails.
+   *
+   * @param {rnp_key_handle_t} primaryHandle - Handle of a primary key.
+   * @param {string} usage - "sign" or "encrypt".
+   * @returns {?object} - { algo, bits, curve }, or null if unsupported.
+   */
+  _subkeySpecForPrimary(primaryHandle, usage) {
+    const primaryAlgo = this.getAlgoFromHandle(primaryHandle);
+
+    switch (primaryAlgo) {
+      case "RSA": {
+        // Same size as the primary: a smaller subkey would weaken the key as
+        // a whole, and a larger one buys nothing the primary does not have.
+        const bits = new lazy.ctypes.uint32_t();
+        if (RNPLib.rnp_key_get_bits(primaryHandle, bits.address())) {
+          throw new Error("rnp_key_get_bits failed");
+        }
+        return { algo: "rsa", bits: bits.value, curve: null };
+      }
+
+      case "EDDSA":
+      case "ED25519":
+        return usage == "sign"
+          ? { algo: "eddsa", bits: 0, curve: null }
+          : { algo: "ecdh", bits: 0, curve: "Curve25519" };
+
+      case "ECDSA": {
+        // Keep the curve the primary already uses, so the key stays one
+        // coherent algorithm family rather than a mixture.
+        const curve = new lazy.ctypes.char.ptr();
+        if (RNPLib.rnp_key_get_curve(primaryHandle, curve.address())) {
+          throw new Error("rnp_key_get_curve failed");
+        }
+        const curveStr = curve.readString();
+        RNPLib.rnp_buffer_destroy(curve);
+        return {
+          algo: usage == "sign" ? "ecdsa" : "ecdh",
+          bits: 0,
+          curve: curveStr,
+        };
+      }
+
+      default:
+        lazy.log.warn(`cannot add a subkey to a ${primaryAlgo} primary key`);
+        return null;
+    }
+  },
+
+  /**
+   * Generate a subkey and bind it to the primary key. The caller has already
+   * decided that this is allowed; this method does the work and saves it.
+   *
+   * The primary key is unlocked on demand, which may prompt the user for a
+   * passphrase. The new subkey is protected with the same passphrase.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {object} spec - What to generate.
+   * @param {string} spec.usage - "sign" or "encrypt".
+   * @param {string} spec.algo - The RNP algorithm name.
+   * @param {integer} spec.bits - Bits, or 0 to leave the default.
+   * @param {?string} spec.curve - Curve, or null to leave the default.
+   * @param {integer} spec.expirySeconds - Seconds until expiry, 0 for never.
+   * @returns {Promise<boolean>} - true if a subkey was added.
+   */
+  async _generateSubkey(
+    primaryFpr,
+    { usage, algo, bits, curve, expirySeconds }
+  ) {
     const tracker =
       RnpPrivateKeyUnlockTracker.constructFromFingerprint(primaryFpr);
     try {
       if (!tracker.available()) {
-        return false;
-      }
-      if (!this.canGenerateV4PQCEncryptionSubkey(tracker.getHandle())) {
         return false;
       }
 
@@ -6446,12 +6600,28 @@ export var RNP = {
           genOp.address(),
           RNPLib.ffi,
           tracker.getHandle(),
-          PQC_ENCRYPTION_ALGO
+          algo
         )
       ) {
         throw new Error("rnp_op_generate_subkey_create failed");
       }
       try {
+        // Clear before adding. add_usage extends the algorithm's defaults
+        // rather than replacing them, so an RSA signing subkey would
+        // otherwise be able to encrypt as well, and nothing downstream could
+        // tell which subkey was meant to do what.
+        if (RNPLib.rnp_op_generate_clear_usage(genOp)) {
+          throw new Error("rnp_op_generate_clear_usage failed");
+        }
+        if (RNPLib.rnp_op_generate_add_usage(genOp, usage)) {
+          throw new Error("rnp_op_generate_add_usage failed");
+        }
+        if (bits && RNPLib.rnp_op_generate_set_bits(genOp, bits)) {
+          throw new Error("rnp_op_generate_set_bits failed");
+        }
+        if (curve && RNPLib.rnp_op_generate_set_curve(genOp, curve)) {
+          throw new Error("rnp_op_generate_set_curve failed");
+        }
         if (RNPLib.rnp_op_generate_set_protection_password(genOp, passphrase)) {
           throw new Error("rnp_op_generate_set_protection_password failed");
         }
@@ -6470,6 +6640,95 @@ export var RNP = {
 
     await this.saveKeyRings();
     return true;
+  },
+
+  /**
+   * Add a signing or encryption subkey to an existing primary key, so that a
+   * subkey can be replaced while the certificate and the trust placed in it
+   * survive. This is what makes rotation possible at all: without it, the
+   * structure Item 60 produces is created once and never renewed.
+   *
+   * The new subkey is added alongside the existing ones, not in place of one.
+   * Rotation is the pair of operations -- add the new subkey, let the old one
+   * expire -- and staggering the two expirations is what keeps a key usable
+   * throughout, so the expiry is the caller's to choose (see Item 62 for
+   * making the choice visible).
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {object} options
+   * @param {string} options.usage - "sign" or "encrypt".
+   * @param {integer} options.expirySeconds - Seconds until the new subkey
+   *   expires, or 0 if it should never expire.
+   * @returns {Promise<boolean>} - true if a subkey was added, false if the
+   *   preconditions weren't met.
+   */
+  async addSubkey(primaryFpr, { usage, expirySeconds }) {
+    if (usage != "sign" && usage != "encrypt") {
+      throw new Error(`invalid subkey usage ${usage}`);
+    }
+    if (!Number.isInteger(expirySeconds) || expirySeconds < 0) {
+      throw new Error(`invalid expirySeconds ${expirySeconds}`);
+    }
+
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(
+      RNPLib.ffi,
+      `0x${primaryFpr}`
+    );
+    if (!handle || handle.isNull()) {
+      return false;
+    }
+
+    let spec;
+    try {
+      if (!this.canAddSubkey(handle)) {
+        return false;
+      }
+      spec = this._subkeySpecForPrimary(handle, usage);
+    } finally {
+      RNPLib.rnp_key_handle_destroy(handle);
+    }
+
+    if (!spec) {
+      return false;
+    }
+
+    return this._generateSubkey(primaryFpr, {
+      usage,
+      ...spec,
+      expirySeconds,
+    });
+  },
+
+  /**
+   * Add a v4 post-quantum (ML-KEM-768+X25519) encryption subkey to the
+   * given primary key. The primary key is unlocked on demand, which may
+   * prompt the user for a passphrase. The new subkey is protected with
+   * the same passphrase that protects the primary key.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {integer} expirySeconds - Seconds until the new subkey
+   *   expires, or 0 if it should never expire.
+   * @returns {Promise<boolean>} - true if a subkey was added, false if
+   *   the preconditions weren't met or the user cancelled.
+   */
+  async addV4PQCEncryptionSubkey(primaryFpr, expirySeconds) {
+    if (!Number.isInteger(expirySeconds) || expirySeconds < 0) {
+      throw new Error(`invalid expirySeconds ${expirySeconds}`);
+    }
+
+    // The PQC policy is stricter than the general one: it also requires the
+    // experimental library, a v4 ECC primary and an opted-in test address.
+    if (!this.canGenerateV4PQCEncryptionSubkeyByFpr(primaryFpr)) {
+      return false;
+    }
+
+    return this._generateSubkey(primaryFpr, {
+      usage: "encrypt",
+      algo: PQC_ENCRYPTION_ALGO,
+      bits: 0,
+      curve: null,
+      expirySeconds,
+    });
   },
 
   /**

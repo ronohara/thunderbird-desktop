@@ -9,6 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   EnigmailConstants: "chrome://openpgp/content/modules/constants.sys.mjs",
   EnigmailFuncs: "chrome://openpgp/content/modules/funcs.sys.mjs",
   EnigmailKeyRing: "chrome://openpgp/content/modules/keyRing.sys.mjs",
+  MailServices: "resource:///modules/MailServices.sys.mjs",
   PgpSqliteDb2: "chrome://openpgp/content/modules/sqliteDb.sys.mjs",
   RNP: "chrome://openpgp/content/modules/RNP.sys.mjs",
 });
@@ -102,11 +103,11 @@ export var EnigmailEncryption = {
     result.bcc = bccMailAddr.split(/\s*,\s*/);
     result.aliasKeys = new Map();
 
-    if (result.to.length == 1 && result.to[0].length == 0) {
+    if (result.to.length == 1 && !result.to[0].length) {
       result.to.splice(0, 1); // remove the single empty entry
     }
 
-    if (result.bcc.length == 1 && result.bcc[0].length == 0) {
+    if (result.bcc.length == 1 && !result.bcc[0].length) {
       result.bcc.splice(0, 1); // remove the single empty entry
     }
 
@@ -181,7 +182,73 @@ export var EnigmailEncryption = {
       result.sign = true;
     }
 
+    // Item 62: the subkey this identity has named, if any. Carried in the
+    // arguments so RNP can honour it where the sender key is resolved, and
+    // refuse rather than substitute when it cannot be used.
+    if (result.sign) {
+      result.signingSubkeyFpr = this.namedSigningSubkeyFor(fromMailAddr);
+    }
+
     return result;
+  },
+
+  /**
+   * The signing subkey an identity has named for itself, if any.
+   *
+   * GnuPG takes this from `--local-user` / `--default-key`; here it is the
+   * `openpgp_signing_subkey` attribute on the identity, holding a subkey
+   * fingerprint. An empty string means "choose automatically", which is the
+   * behaviour every profile had before the setting existed -- so an unset
+   * attribute changes nothing.
+   *
+   * The identity is found from the sender, which is either an address or a
+   * `0x` key id, because that is all the caller has: the send path is several
+   * layers from the account, and passing an identity object down would be a
+   * wider change than the choice itself warrants.
+   *
+   * @param {string} sender - The sender address, or a `0x` key id.
+   * @returns {string} A subkey fingerprint, or the empty string.
+   */
+  namedSigningSubkeyFor(sender) {
+    const wanted = String(sender || "").trim();
+    if (!wanted) {
+      return "";
+    }
+
+    let identity = null;
+    try {
+      const asKeyId = /^0x([0-9a-f]+)$/i.exec(wanted);
+      for (const candidate of lazy.MailServices.accounts.allIdentities) {
+        if (asKeyId) {
+          const configured = candidate
+            .getUnicharAttribute("openpgp_key_id")
+            .replace(/^0x/i, "");
+          if (
+            configured &&
+            configured.toUpperCase() == asKeyId[1].toUpperCase()
+          ) {
+            identity = candidate;
+            break;
+          }
+        } else if (
+          candidate.email &&
+          candidate.email.toLowerCase() == wanted.toLowerCase()
+        ) {
+          identity = candidate;
+          break;
+        }
+      }
+    } catch (ex) {
+      // No account manager, or an identity without the attribute: automatic
+      // selection. A missing preference must not stop a message being signed.
+      log.debug("could not resolve the identity for " + wanted, ex);
+      return "";
+    }
+
+    if (!identity) {
+      return "";
+    }
+    return identity.getUnicharAttribute("openpgp_signing_subkey") || "";
   },
 
   /**
@@ -426,7 +493,9 @@ export var EnigmailEncryption = {
     }
     // Never hand back undefined: an exception on the way in leaves exitCode
     // unset, and the caller turns that into "FAILED: undefined".
-    return typeof resultStatus.exitCode == "number" ? resultStatus.exitCode : -1;
+    return typeof resultStatus.exitCode == "number"
+      ? resultStatus.exitCode
+      : -1;
   },
 
   encryptMessage() {

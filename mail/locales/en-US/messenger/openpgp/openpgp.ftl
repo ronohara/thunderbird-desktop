@@ -242,6 +242,16 @@ openpgp-key-man-change-expiry =
 openpgp-key-man-refresh-online =
     .label = Refresh Online
     .accesskey = R
+openpgp-key-man-add-signing-subkey =
+    .label = Generate Signing Subkey
+    .accesskey = S
+openpgp-key-man-add-encryption-subkey =
+    .label = Generate Encryption Subkey
+    .accesskey = E
+openpgp-subkey-confirm-generate-signing = Generate a new subkey for signing? The existing subkeys are kept, so the key stays usable while the old one is retired.
+openpgp-subkey-generate-signing-failed = The signing subkey could not be generated.
+openpgp-subkey-confirm-generate-encryption = Generate a new subkey for encryption? The existing subkeys are kept, so the key stays usable while the old one is retired.
+openpgp-subkey-generate-encryption-failed = The encryption subkey could not be generated.
 # Do not translate: PQC
 openpgp-key-man-add-pqc =
     .label = Generate PQC Encryption Subkey

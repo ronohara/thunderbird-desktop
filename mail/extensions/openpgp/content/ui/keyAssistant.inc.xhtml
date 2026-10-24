@@ -74,6 +74,17 @@
       <p id="keyAssistantSigningKeyValue"></p>
       <p id="keyAssistantSigningKeySource" class="tip-caption"></p>
       <p id="keyAssistantSigningKeyCache" class="tip-caption"></p>
+      <!--
+        The named choice, matching GnuPG&rsquo;s local-user / default-key
+        options. Shown only for a key the internal engine holds, because with
+        the external keyring the choice belongs to GnuPG.
+      -->
+      <label id="keyAssistantSigningSubkeyChoiceLabel"
+             for="keyAssistantSigningSubkeyChoice"
+             class="tip-caption"
+             data-l10n-id="openpgp-key-assistant-signing-subkey-label"
+             hidden="hidden"/>
+      <select id="keyAssistantSigningSubkeyChoice" hidden="hidden"/>
     </section>
 
     <!-- Issues section. -->

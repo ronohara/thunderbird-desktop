@@ -6,6 +6,8 @@ support-files = [
 ]
 tags = ["openpgp"]
 
+["test_addSubkey.js"]
+
 ["test_alias.js"]
 
 ["test_armor.js"]
@@ -67,6 +69,8 @@ skip-if = ["os != 'linux'"]
 skip-if = ["os != 'linux'"]
 
 ["test_secretKeys.js"]
+
+["test_signingSubkeyChoice.js"]
 
 ["test_strip.js"]
 

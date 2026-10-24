@@ -190,26 +190,37 @@ var gKeyAssistant = {
   /**
    * Name the key that will sign, before the message is sent.
    *
-   * With the external keyring the choice is GnuPG's: it applies the configured
-   * default key, or falls back to the first usable key in its own order.
-   * Reporting that choice is the whole point -- a user cannot verify a
-   * decision they cannot see, and the previous behaviour made it silently.
+   * With either engine the choice must be visible: a user cannot verify a
+   * decision they cannot see. For the external keyring the choice is GnuPG's
+   * -- it applies the configured default key, or falls back to the first
+   * usable key in its own order -- and it is reported rather than assumed.
    *
-   * Shown only when the external path is actually going to be used. For an
-   * internal key the identity names it and the acceptance UI already shows it,
-   * so a second line saying the same thing would be noise.
+   * For a key the internal engine holds, the choice is ours, and since
+   * Item 60 a generated key has two subkeys, so the interesting question is
+   * no longer which key but which subkey. The engine prefers the newest usable
+   * signing subkey and only falls back to the primary if no subkey can sign;
+   * that rule is what this line reports, and the chooser beneath it is the
+   * named choice -- the equivalent of GnuPG's --local-user / --default-key.
    */
   async fillSigningKey() {
     const section = document.getElementById("keyAssistantSigningKey");
     const value = document.getElementById("keyAssistantSigningKeyValue");
     const source = document.getElementById("keyAssistantSigningKeySource");
     section.hidden = true;
+    this.hideSigningSubkeyChoice();
 
     const identity = gCurrentIdentity;
-    if (!identity?.email || !GPGME.init()) {
+    if (!identity?.email) {
       return;
     }
-    if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+
+    const useExternalKeyring =
+      GPGME.init() &&
+      Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") &&
+      identity.getBoolAttribute("is_gnupg_key_id");
+
+    if (!useExternalKeyring) {
+      await this.fillInternalSigningKey(identity, value, source, section);
       return;
     }
 
@@ -241,6 +252,161 @@ var gKeyAssistant = {
     await this.fillPassphraseCacheNote();
 
     section.hidden = false;
+  },
+
+  /**
+   * Report the subkey the internal engine will sign with, and offer the
+   * named choice.
+   *
+   * @param {nsIMsgIdentity} identity - The composer's identity.
+   * @param {Element} value - Element naming the key.
+   * @param {Element} source - Element explaining the choice.
+   * @param {Element} section - The whole section.
+   */
+  async fillInternalSigningKey(identity, value, source, section) {
+    const keyId = identity.getUnicharAttribute("openpgp_key_id");
+    if (!keyId) {
+      return;
+    }
+    const key = EnigmailKeyRing.getKeyById(keyId);
+    if (!key) {
+      return;
+    }
+
+    // A revoked or expired subkey cannot sign, so it is not a candidate.
+    // Listing one would offer a choice that fails at send time.
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const usableSigners = key.subKeys.filter(
+      sk =>
+        sk.keyUseFor.includes("s") &&
+        !/r/i.test(sk.keyTrust) &&
+        (!sk.expiryTime || sk.expiryTime > nowSeconds)
+    );
+
+    const named = identity.getUnicharAttribute("openpgp_signing_subkey");
+    let signer = null;
+    let sourceId;
+
+    if (named) {
+      // Named but unusable still reports the name: the send will refuse, and
+      // showing a different subkey here would say the opposite.
+      signer =
+        key.subKeys.find(sk => sk.fpr.toUpperCase() == named.toUpperCase()) ||
+        null;
+      sourceId = "openpgp-key-assistant-signing-key-source-named";
+      if (!signer) {
+        document.l10n.setAttributes(
+          value,
+          "openpgp-key-assistant-signing-subkey-missing",
+          {
+            fingerprint: named,
+          }
+        );
+        document.l10n.setAttributes(source, sourceId);
+        // The chooser is still offered, so the setting can be repaired from
+        // here rather than leaving the user with a refusal and no way out.
+        if (usableSigners.length) {
+          this.fillSigningSubkeyChoice(identity, usableSigners, "");
+        }
+        section.hidden = false;
+        return;
+      }
+    } else if (usableSigners.length) {
+      signer = usableSigners.reduce((a, b) =>
+        b.keyCreated >= a.keyCreated ? b : a
+      );
+      sourceId = "openpgp-key-assistant-signing-key-source-newest-subkey";
+    } else if (key.keyUseFor.includes("s")) {
+      signer = key;
+      sourceId = "openpgp-key-assistant-signing-key-source-primary";
+    } else {
+      return;
+    }
+
+    document.l10n.setAttributes(
+      value,
+      "openpgp-key-assistant-signing-key-value",
+      {
+        fingerprint: signer.fpr,
+      }
+    );
+    document.l10n.setAttributes(source, sourceId);
+
+    this.fillSigningSubkeyChoice(identity, usableSigners, named);
+
+    // No passphrase-cache note here: that note describes gpg-agent's cache,
+    // and an internal key is unlocked through the primary password instead.
+    section.hidden = false;
+  },
+
+  /**
+   * Offer the signing subkeys of the identity's key, so one can be named.
+   *
+   * "Automatic" is the default and is what every profile had before this
+   * existed. A named subkey is stored on the identity, so it applies to every
+   * message this identity sends rather than to this one draft.
+   *
+   * @param {nsIMsgIdentity} identity - The composer's identity.
+   * @param {object[]} signers - Usable signing subkeys.
+   * @param {string} named - The currently named fingerprint, or "".
+   */
+  fillSigningSubkeyChoice(identity, signers, named) {
+    const chooser = document.getElementById("keyAssistantSigningSubkeyChoice");
+    const label = document.getElementById(
+      "keyAssistantSigningSubkeyChoiceLabel"
+    );
+    chooser.replaceChildren();
+
+    if (!signers.length) {
+      this.hideSigningSubkeyChoice();
+      return;
+    }
+
+    const automatic = document.createElement("option");
+    automatic.value = "";
+    document.l10n.setAttributes(
+      automatic,
+      "openpgp-key-assistant-signing-subkey-automatic"
+    );
+    chooser.appendChild(automatic);
+
+    let selected = 0;
+    for (const sk of signers) {
+      const option = document.createElement("option");
+      option.value = sk.fpr;
+      document.l10n.setAttributes(
+        option,
+        "openpgp-key-assistant-signing-subkey-item",
+        { keyId: sk.keyId, created: sk.created }
+      );
+      if (named && sk.fpr.toUpperCase() == named.toUpperCase()) {
+        selected = chooser.children.length;
+      }
+      chooser.appendChild(option);
+    }
+    chooser.selectedIndex = selected;
+
+    chooser.onchange = () => {
+      identity.setUnicharAttribute("openpgp_signing_subkey", chooser.value);
+      // Redraw, so the line above names the subkey just chosen.
+      this.fillSigningKey();
+    };
+
+    chooser.hidden = false;
+    label.hidden = false;
+  },
+
+  hideSigningSubkeyChoice() {
+    const chooser = document.getElementById("keyAssistantSigningSubkeyChoice");
+    const label = document.getElementById(
+      "keyAssistantSigningSubkeyChoiceLabel"
+    );
+    if (chooser) {
+      chooser.hidden = true;
+    }
+    if (label) {
+      label.hidden = true;
+    }
   },
 
   /**

@@ -152,6 +152,18 @@
               hidden="hidden"
             />
             <button
+              id="addSigningSubkeyButton"
+              data-l10n-id="openpgp-key-man-add-signing-subkey"
+              oncommand="addSubkey('sign')"
+              hidden="hidden"
+            />
+            <button
+              id="addEncryptionSubkeyButton"
+              data-l10n-id="openpgp-key-man-add-encryption-subkey"
+              oncommand="addSubkey('encrypt')"
+              hidden="hidden"
+            />
+            <button
               id="addPQCSubkeyButton"
               data-l10n-id="openpgp-key-man-add-pqc"
               oncommand="addPQCSubkey()"

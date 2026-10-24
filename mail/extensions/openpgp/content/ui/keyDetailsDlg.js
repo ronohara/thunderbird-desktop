@@ -76,6 +76,9 @@ let gShowPassphraseTab = false;
 
 // True if the key is eligible for adding a PQC encryption subkey.
 let gCanAddPQCSubkey = false;
+// Whether a signing or encryption subkey may be added at all. Separate from the
+// PQC flag above, which carries the stricter post-quantum policy on top.
+let gCanAddSubkey = false;
 
 window.addEventListener("DOMContentLoaded", onLoad);
 window.addEventListener("unload", onUnload);
@@ -136,7 +139,7 @@ async function onLoad() {
   // The tabpanels element fires "select" when the active tab changes.
   document.getElementById("mainTabPanel").addEventListener("select", event => {
     if (event.target.id == "mainTabPanel") {
-      updatePQCSubkeyButton();
+      updateSubkeyButtons();
     }
   });
 
@@ -144,13 +147,21 @@ async function onLoad() {
 }
 
 /**
- * Show the button to add a PQC subkey only while the structure tab, which
- * lists the key's subkeys, is the active tab.
+ * Show the add-subkey buttons only while the structure tab, which lists the
+ * key's subkeys, is the active tab. Each button also needs its own policy to
+ * be satisfied: the general one for signing and encryption, and the stricter
+ * post-quantum one for the PQC button.
  */
-function updatePQCSubkeyButton() {
+function updateSubkeyButtons() {
+  const onStructureTab =
+    document.getElementById("mainTabs").selectedTab?.id == "structureTab";
+
   document.getElementById("addPQCSubkeyButton").hidden =
-    !gCanAddPQCSubkey ||
-    document.getElementById("mainTabs").selectedTab?.id != "structureTab";
+    !gCanAddPQCSubkey || !onStructureTab;
+  document.getElementById("addSigningSubkeyButton").hidden =
+    !gCanAddSubkey || !onStructureTab;
+  document.getElementById("addEncryptionSubkeyButton").hidden =
+    !gCanAddSubkey || !onStructureTab;
 }
 
 async function changeExpiry() {
@@ -185,23 +196,29 @@ async function changeExpiry() {
 }
 
 /**
- * Determine the expiration date to use for a newly added encryption
- * subkey: the latest expiration date among the existing usable
- * encryption subkeys, or the primary key's expiration if there is none.
+ * Determine the expiration date to use for a newly added subkey: the latest
+ * expiration date among the existing usable subkeys of the same usage, or the
+ * primary key's expiration if there is none.
+ *
+ * Matching the subkey it is meant to replace is the point: a rotated signing
+ * subkey should inherit the retirement date the old one was given, so the two
+ * do not expire together and leave the key unable to sign.
  *
  * @param {object} keyObj - The primary key.
+ * @param {string} usage - "sign" or "encrypt".
  * @returns {integer} - Seconds until expiration, 0 for no expiration.
  */
-function newEncryptionSubkeyExpirySeconds(keyObj) {
+function newSubkeyExpirySeconds(keyObj, usage) {
   const nowSeconds = Math.floor(Date.now() / 1000);
+  const usageChar = usage == "sign" ? "s" : "e";
   let reference = 0;
 
   for (const subkey of keyObj.subKeys) {
-    // Ignore subkeys that cannot be used to encrypt new messages.
+    // Ignore subkeys that cannot be used for this purpose.
     // If a subkey has expired, the user is expected to extend its
     // expiration date first.
     if (
-      !/e/.test(subkey.keyUseFor) ||
+      !subkey.keyUseFor.includes(usageChar) ||
       /r/i.test(subkey.keyTrust) ||
       (subkey.expiryTime && subkey.expiryTime <= nowSeconds)
     ) {
@@ -226,6 +243,71 @@ function newEncryptionSubkeyExpirySeconds(keyObj) {
   return reference - nowSeconds;
 }
 
+async function addSubkey(usage) {
+  const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+  if (!keyObj || !keyObj.secretAvailable) {
+    return;
+  }
+
+  const isSigning = usage == "sign";
+  const button = document.getElementById(
+    isSigning ? "addSigningSubkeyButton" : "addEncryptionSubkeyButton"
+  );
+
+  // Adding a subkey changes the key other people hold, so it is a deliberate
+  // act with a confirmation. The new subkey is added alongside the old one:
+  // rotation is this plus letting the old one expire, never a removal.
+  if (
+    !Services.prompt.confirm(
+      window,
+      null,
+      l10n.formatValueSync(
+        isSigning
+          ? "openpgp-subkey-confirm-generate-signing"
+          : "openpgp-subkey-confirm-generate-encryption"
+      )
+    )
+  ) {
+    return;
+  }
+
+  button.disabled = true;
+  let added = false;
+  try {
+    added = await RNP.addSubkey(keyObj.fpr, {
+      usage,
+      expirySeconds: newSubkeyExpirySeconds(keyObj, usage),
+    });
+  } catch (e) {
+    console.warn(`Generating a ${usage} subkey FAILED!`, e);
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync(
+        isSigning
+          ? "openpgp-subkey-generate-signing-failed"
+          : "openpgp-subkey-generate-encryption-failed"
+      )
+    );
+    button.disabled = false;
+    return;
+  }
+
+  button.disabled = false;
+  if (!added) {
+    return;
+  }
+
+  if (gShowPassphraseTab) {
+    // Pick up the new subkey, so that a later passphrase change covers
+    // it too, instead of leaving it on the current passphrase.
+    releasePrivateKeys();
+    await loadPassphraseProtection();
+  }
+
+  onDataModified();
+}
+
 async function addPQCSubkey() {
   const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
   if (!keyObj) {
@@ -248,7 +330,7 @@ async function addPQCSubkey() {
   try {
     added = await RNP.addV4PQCEncryptionSubkey(
       keyObj.fpr,
-      newEncryptionSubkeyExpirySeconds(keyObj)
+      newSubkeyExpirySeconds(keyObj, "encrypt")
     );
   } catch (e) {
     console.warn("Generating a PQC encryption subkey FAILED!", e);
@@ -543,6 +625,7 @@ function isAccepted(value) {
 async function reloadData(firstLoad) {
   gUserId = null;
   gCanAddPQCSubkey = false;
+  gCanAddSubkey = false;
 
   var treeChildren = document.getElementById("keyListChildren");
 
@@ -662,6 +745,7 @@ async function reloadData(firstLoad) {
       expiryButton.disabled = !keyObj.secretMaterial;
 
       gCanAddPQCSubkey = RNP.canGenerateV4PQCEncryptionSubkeyByFpr(keyObj.fpr);
+      gCanAddSubkey = RNP.canAddSubkeyByFpr(keyObj.fpr);
     }
   } else {
     const isStillValid = !(
@@ -745,7 +829,7 @@ async function reloadData(firstLoad) {
   document.getElementById("key-detail-has-insecure").hidden =
     !keyObj.hasIgnoredAttributes;
 
-  updatePQCSubkeyButton();
+  updateSubkeyButtons();
 }
 
 function setOkButtonState() {

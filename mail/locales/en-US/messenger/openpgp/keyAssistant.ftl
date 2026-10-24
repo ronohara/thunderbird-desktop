@@ -172,6 +172,26 @@ openpgp-key-assistant-signing-key-value = Key { $fingerprint }
 openpgp-key-assistant-signing-key-source-default = Chosen because it is your configured default signing key.
 openpgp-key-assistant-signing-key-source-gnupg-order = Chosen by GnuPG: the first usable signing key for this identity.
 
+# The internal engine's rules. Each is reported rather than assumed, for the
+# same reason as the two above: the choice has to be visible to be verifiable.
+openpgp-key-assistant-signing-key-source-newest-subkey = Chosen automatically: the newest usable signing subkey. The certificate key is not used.
+openpgp-key-assistant-signing-key-source-primary = Chosen automatically: the primary key signs, because this key has no usable signing subkey.
+openpgp-key-assistant-signing-key-source-named = Chosen by you: a signing subkey is set for this identity. Sending will stop rather than sign with a different key if it cannot be used.
+
+# Variables:
+# $fingerprint (String) - Fingerprint of a named subkey that is not in the key.
+openpgp-key-assistant-signing-subkey-missing = Key { $fingerprint }, which you chose, is not part of this key any more. Sending will stop until that setting is changed.
+
+# The named choice, matching GnuPG's --local-user / --default-key. Shown only
+# for a key the internal engine holds.
+openpgp-key-assistant-signing-subkey-label = Signing subkey
+openpgp-key-assistant-signing-subkey-automatic = Automatic (newest usable subkey)
+
+# Variables:
+# $keyId (String) - Short key ID of the subkey.
+# $created (String) - Date the subkey was created.
+openpgp-key-assistant-signing-subkey-item = { $keyId } — created { $created }
+
 # Shown under the signing key. Both numbers are read from gpg-agent's own
 # configuration; the second is the one that bounds the exposure, because the
 # first timer restarts on every use.
