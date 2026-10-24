@@ -334,6 +334,91 @@ add_task(
 );
 
 /**
+ * A cancelled prompt is a cancellation, not a failure.
+ *
+ * Design 5.7 asks for the two to be distinguishable, and before Item 36 they
+ * arrived identical: a cancellation surfaced as an unexplained failure, so
+ * "Signing was cancelled" was unreachable. Measured on gpgme 1.18 with gpg
+ * 2.4.4, cancelling at the pinentry returns code 99 (GPG_ERR_CANCELED) from
+ * source 5 (GPG_ERR_SOURCE_PINENTRY), packed as 83886179.
+ *
+ * The stub here refuses GETPIN the way a real pinentry does on Cancel, so the
+ * whole path is exercised rather than a constant being asserted.
+ */
+add_task(
+  { skip_if: () => !externalGnuPGReady },
+  async function cancelledPromptIsNotAFailure() {
+    const cancelPath = PathUtils.join(gnupgHome.path, "pinentry-cancel.sh");
+    await IOUtils.writeUTF8(
+      cancelPath,
+      [
+        "#!/bin/sh",
+        "printf 'OK non-interactive test pinentry\\n'",
+        "while IFS= read -r line; do",
+        '  case "${line%% *}" in',
+        "    GETPIN) printf 'ERR 83886179 Operation cancelled <Pinentry>\\n' ;;",
+        "    BYE)    printf 'OK closing connection\\n'; exit 0 ;;",
+        "    *)      printf 'OK\\n' ;;",
+        "  esac",
+        "done",
+        "",
+      ].join("\n")
+    );
+    await IOUtils.setPermissions(cancelPath, 0o700);
+    await setPinentry(cancelPath);
+
+    const args = detachedSignArgs(`0x${BOB_PRIMARY_ID}`);
+    const resultStatus = {};
+
+    let error = null;
+    try {
+      await RNP.encryptAndOrSign(PLAINTEXT, args, resultStatus);
+    } catch (ex) {
+      error = ex;
+    }
+
+    Assert.ok(error, "a cancelled prompt should not produce a signature");
+
+    // The code is gpgme's packed value: 99 | (5 << 24).
+    Assert.equal(
+      resultStatus.exitCode,
+      83886179,
+      `the packed cancellation code should be recorded, got ${resultStatus.exitCode}`
+    );
+    Assert.equal(
+      resultStatus.cancelled,
+      true,
+      "the status object should say this was a cancellation"
+    );
+    Assert.ok(
+      error.message.includes("cancelled"),
+      `the message should say the signing was cancelled, got: ${error.message}`
+    );
+    Assert.ok(
+      !error.message.includes("failed"),
+      `a cancellation must not be worded as a failure, got: ${error.message}`
+    );
+
+    // And the control: isCancellation() must not claim an ordinary failure.
+    Assert.equal(
+      GPGME.isCancellation(83886179),
+      true,
+      "the measured cancellation code is recognised"
+    );
+    Assert.equal(
+      GPGME.isCancellation(67108949),
+      false,
+      "the no-pinentry code is a failure, not a cancellation"
+    );
+    Assert.equal(
+      GPGME.isCancellation(0),
+      false,
+      "success is not a cancellation"
+    );
+  }
+);
+
+/**
  * With a pinentry available the same request succeeds, and the passphrase
  * is supplied by gpg-agent. Thunderbird contributes no prompt of its own,
  * which is what the first task relies on.

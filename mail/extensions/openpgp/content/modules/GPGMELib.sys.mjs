@@ -709,6 +709,25 @@ function enableGPGMELibJS() {
 
     GPG_ERR_NO_ERROR: 0x00000000,
     GPG_ERR_EOF: 16383,
+
+    // gpgme packs a source in the high byte and an error code in the low 24
+    // bits. Both numbers are needed: the code says what happened, the source
+    // says where. Measured on gpgme 1.18 with gpg 2.4.4, cancelling at the
+    // pinentry returns code 99 (GPG_ERR_CANCELED) from source 5
+    // (GPG_ERR_SOURCE_PINENTRY), packed as 83886179.
+    //
+    // The distinction matters because the design requires a cancelled prompt to
+    // be reported as a cancellation and not as a failure: before this the two
+    // arrived identical, and "Signing was cancelled" was unreachable.
+    GPG_ERR_SOURCE_SHIFT: 24,
+    GPG_ERR_CODE_MASK: 0xffffff,
+    GPG_ERR_SOURCE_UNKNOWN: 0,
+    GPG_ERR_SOURCE_GPGME: 1,
+    GPG_ERR_SOURCE_GPG: 2,
+    GPG_ERR_SOURCE_GPGSM: 3,
+    GPG_ERR_SOURCE_GPGAGENT: 4,
+    GPG_ERR_SOURCE_PINENTRY: 5,
+    GPG_ERR_CANCELED: 99,
     GPGME_PROTOCOL_OpenPGP: 0,
     GPGME_EXPORT_MODE_SECRET: 16,
     GPGME_DECRYPT_UNWRAP: 128,

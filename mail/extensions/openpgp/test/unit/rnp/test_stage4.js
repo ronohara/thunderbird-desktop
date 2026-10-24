@@ -72,9 +72,72 @@ function fileSize(file) {
   return file.exists() ? file.fileSize : -1;
 }
 
-/** Remove both files and forget the cached passphrase. */
-async function clearStoreFiles() {
+/**
+ * Wait until the keyring files stop changing, then remove them.
+ *
+ * **Measured 2026-10-24, and the order is the whole fix.** A keyring write that
+ * is still in flight when the files are deleted completes *afterwards* and
+ * recreates the file it was writing. Observed deterministically in state 3:
+ * both files gone, then fifty milliseconds later `secring.gpg` present again at
+ * **0 bytes** -- F49's empty-count write, not the key coming back. `saveKeyRing`
+ * writes to `<path>.tmp-new` and renames, so the rename is what lands late.
+ *
+ * The first attempt at this waited *after* removing and deleted the stub again.
+ * That was worse: a rename landing with real content left `secring.gpg`
+ * populated while the passphrase file was gone, which is exactly the corruption
+ * state `_repairOrWarn()` prompts about -- and in xpcshell the prompt throws
+ * `NS_ERROR_FAILURE` rather than being answerable. So the wait belongs
+ * **before** the removal: once the files have been unchanged across two
+ * samples, nothing is queued against them and deleting them stays deleted.
+ *
+ * Bounded, so a writer that never settles cannot hang the run.
+ */
+async function settleRingFiles() {
+  const sizes = () => [fileSize(passFile()), fileSize(secRingFile())].join(",");
+
+  let previous = sizes();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await new Promise(resolve => do_timeout(50, resolve));
+    const current = sizes();
+    if (current === previous) {
+      return;
+    }
+    previous = current;
+  }
+}
+
+/**
+ * The files that make up the store, including the `.old` siblings.
+ *
+ * **Four files, not two, and this is the root cause the flake was hiding.**
+ * `RNPLib.saveKeyRing()` begins by copying `<path>` to `<path>.old` before it
+ * writes the new content. So after any save the *previous* keyring survives as
+ * `secring.gpg.old` / `pubring.gpg.old`, and `loadWithFallback()` reads the
+ * `.old` file when the main one is missing. Removing only the two main files
+ * therefore leaves the key recoverable, and the next start brings it back.
+ *
+ * Measured 2026-10-24 by listing the profile after `clearStoreFiles()`:
+ * `pubring.gpg.old=419` survived, holding the key that state 3 asserts has
+ * gone. That is corrections-F50 exactly, reproduced in a test that had been
+ * written against a two-file model of the store.
+ *
+ * @returns {nsIFile[]} The four files, in removal order.
+ */
+function storeFiles() {
+  const files = [passFile(), secRingFile()];
   for (const file of [passFile(), secRingFile()]) {
+    const old = file.clone();
+    old.leafName = file.leafName + ".old";
+    files.push(old);
+  }
+  return files;
+}
+
+/** Remove every store file and forget the cached passphrase. */
+async function clearStoreFiles() {
+  await settleRingFiles();
+
+  for (const file of storeFiles()) {
     if (file.exists()) {
       await IOUtils.remove(file.path, { ignoreAbsent: true });
     }
@@ -175,6 +238,18 @@ add_task(async function state3_deleting_both_does_not_restore_anything() {
 
   Assert.equal(fileSize(passFile()), -1, "starting from no passphrase file");
   Assert.equal(fileSize(secRingFile()), -1, "and no secret keyring");
+  // The `.old` siblings are asserted as well: they are what loadWithFallback()
+  // reads when the main file is absent, so leaving one in place means the key
+  // is still there under a different name.
+  for (const file of storeFiles()) {
+    if (/\.old$/.test(file.leafName)) {
+      Assert.equal(
+        fileSize(file),
+        -1,
+        `${file.leafName} must be gone too, or the fallback restores the key`
+      );
+    }
+  }
 
   // The startup path again, as a restart would run it.
   await RNP.once();

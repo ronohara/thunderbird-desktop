@@ -143,6 +143,20 @@ async function generateKey(uid, algo, usage, subAlgo, subUsage) {
   const fpr = created ? created[1] : null;
   Assert.ok(fpr, `gpg should report the new key for ${uid}: ${stdout}`);
 
+  // KEY_CREATED is emitted before gpg's keyring write is necessarily complete,
+  // so a listing immediately afterwards can miss the key. Measured 2026-10-24:
+  // the identity generated here resolved to null in a directory run while the
+  // same task passed alone, which is the signature of this and not of a defect
+  // in the resolver. Wait, bounded, until gpg lists what it says it created.
+  let listed = false;
+  for (let attempt = 0; attempt < 20 && !listed; attempt++) {
+    listed = (await listKeys(uid)).some(k => k.fpr == fpr);
+    if (!listed) {
+      await new Promise(resolve => do_timeout(25, resolve));
+    }
+  }
+  Assert.ok(listed, `gpg should list the key it just created for ${uid}`);
+
   let subFpr = "";
   if (subAlgo) {
     // The subkey's fingerprint also comes from gpg's status output rather than

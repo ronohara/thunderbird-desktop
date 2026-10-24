@@ -4337,7 +4337,20 @@ export var RNP = {
    * @param {object} resultStatus - The operation's out parameter.
    * @returns {string} The message.
    */
-  gpgmeFailure(what, resultStatus) {
+  async gpgmeFailure(what, resultStatus) {
+    // A cancellation is not a failure and must not be worded as one. Design
+    // 5.7 asks for "Signing was cancelled" distinct from a failure, and the
+    // measurement behind that is GPG_ERR_CANCELED (99) from
+    // GPG_ERR_SOURCE_PINENTRY (5), which before Item 36 arrived looking
+    // exactly like a failure.
+    //
+    // The async form of the lookup, because every caller is async and
+    // formatValueSync throws "Can't use formatValueSync when state is async"
+    // -- the failure the first version of this produced, which is worth
+    // recording: it turned a cancellation into a localisation error.
+    if (resultStatus?.cancelled) {
+      return l10n.formatValue("key-error-signing-cancelled");
+    }
     const reason = resultStatus?.errorMsg;
     return reason ? `${what} failed: ${reason}` : `${what} failed`;
   },
@@ -4493,9 +4506,16 @@ export var RNP = {
    */
   async encryptWithGnuPG(plaintext, args, resultStatus) {
     if (!lazy.GPGME.allDependenciesLoaded()) {
-      throw new Error(
-        "invalid configuration, request to use external GnuPG key, but GPGME isn't working"
+      // Design 5.7's first condition, in the user's words rather than a
+      // developer's. External identities fail and do not fall back to the
+      // internal engine: falling back would sign with a different key than the
+      // identity names, which is the class of silent substitution this whole
+      // design exists to stop.
+      resultStatus.exitCode = -1;
+      resultStatus.errorMsg = l10n.formatValueSync(
+        "key-error-gnupg-unavailable"
       );
+      return null;
     }
     if (args.sigTypeClear) {
       throw new Error(
@@ -4564,9 +4584,11 @@ export var RNP = {
 
     if (args.sign && args.senderKeyIsExternal) {
       if (!lazy.GPGME.allDependenciesLoaded()) {
-        throw new Error(
-          "invalid configuration, request to use external GnuPG key, but GPGME isn't working"
+        resultStatus.exitCode = -1;
+        resultStatus.errorMsg = l10n.formatValueSync(
+          "key-error-gnupg-unavailable"
         );
+        return null;
       }
       if (args.sigTypeClear) {
         throw new Error(
@@ -4596,7 +4618,7 @@ export var RNP = {
         args.encrypt = false;
         signedInner = await lazy.GPGME.sign(plaintext, args, resultStatus);
         if (!signedInner) {
-          throw new Error(this.gpgmeFailure("GPGME.sign", resultStatus));
+          throw new Error(await this.gpgmeFailure("GPGME.sign", resultStatus));
         }
         this.recordEngineReadBack(resultStatus, { signingKey });
         // Despite our request to produce binary data, GPGME.sign might
@@ -4620,7 +4642,7 @@ export var RNP = {
         this.recordEngineReadBack(resultStatus, { signingKey });
         if (!signResult) {
           throw new Error(
-            this.gpgmeFailure("GPGME.signDetached", resultStatus)
+            await this.gpgmeFailure("GPGME.signDetached", resultStatus)
           );
         }
         return signResult;

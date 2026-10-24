@@ -5,7 +5,8 @@
 set_config("MOZ_THUNDERBIRD", True)
 set_define("MOZ_THUNDERBIRD", True)
 
-imply_option("MOZ_APP_NAME", "thunderbird")
+# MOZ_APP_NAME is implied further down, conditionally on the variant, because
+# it is the binary's name and the GnuPG build must not share it with stock.
 
 set_config("MOZ_APPUPDATE_HOST", "aus.thunderbird.net")
 
@@ -327,6 +328,7 @@ imply_option("MOZ_APP_BASENAME", "Thunderbird", when=~thunderbird_enterprise)
 # MOZ_APP_PROFILE: When set, used for application.ini's
 # "Profile" field, which controls profile location.
 imply_option("MOZ_APP_PROFILE", "Thunderbird", when=(target_is_windows | target_is_osx) & ~thunderbird_enterprise & ~thunderbird_gnupg)
+
 imply_option("MOZ_APP_PROFILE", "thunderbird", when=~target_is_windows & ~target_is_osx & ~thunderbird_enterprise & ~thunderbird_gnupg)
 
 imply_option("MOZ_APP_PROFILE", "ThunderbirdEnterprise", when=(target_is_windows | target_is_osx) & thunderbird_enterprise)
@@ -346,4 +348,23 @@ imply_option("MOZ_APP_UA_NAME", "Firefox", when=thunderbird_enterprise)
 # beside a stock Thunderbird without the two sharing one profiles.ini and
 # taking turns re-pointing its default profile.
 imply_option("MOZ_APP_PROFILE", "ThunderbirdGnuPG", when=(target_is_windows | target_is_osx) & thunderbird_gnupg)
+
 imply_option("MOZ_APP_PROFILE", "thunderbird-gnupg", when=~target_is_windows & ~target_is_osx & thunderbird_gnupg)
+
+# The binary's name, which is the identity that makes the two packages
+# separately installable rather than merely differently branded. It is implied
+# here, conditionally, because a mozconfig cannot do it: `export
+# MOZ_APP_NAME=thunderbird-gnupg` is rejected outright, since this file implies
+# the same option from a plain value and configure refuses to reconcile the two
+# --
+#
+#   Cannot add 'MOZ_APP_NAME=thunderbird' to the implied set because it
+#   conflicts with MOZ_APP_NAME=thunderbird-gnupg from the mozconfig set
+#
+# -- measured 2026-10-24. Making it conditional has the better property anyway:
+# the rename travels with the repository instead of living in an untracked
+# mozconfig, so a checkout built with --enable-gnupg produces the
+# separately-installable binary with no extra setup. Uses --with-app-name, the
+# form the enterprise variant above already uses for the same option.
+imply_option("--with-app-name", "thunderbird", when=~thunderbird_gnupg)
+imply_option("--with-app-name", "thunderbird-gnupg", when=thunderbird_gnupg)

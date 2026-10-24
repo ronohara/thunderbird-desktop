@@ -425,6 +425,16 @@ openpgp-duplicate-key-notice = { $count ->
 
 openpgp-duplicate-key-notice-manage = Open the Key Manager
 
+# Design 5.7, condition 1: the GnuPG library or its keyring cannot be read.
+# The send fails and does not fall back to the internal engine, because falling
+# back would sign with a different key than the identity names.
+key-error-gnupg-unavailable = Your GnuPG keyring could not be read, so this message cannot be signed or encrypted.
+
+# Design 5.7, condition 4: the passphrase prompt was cancelled.
+# Reported as a cancellation, not a failure: the message is kept and can be
+# sent again, and nothing is broken.
+key-error-signing-cancelled = Signing was cancelled. The message has not been sent and is still here.
+
 # Shown instead of the message above when the profile's copy is older than the
 # key in the keyring -- the state that produced a false expiry report. Under
 # the precedence rule the live key wins, so this is information rather than a

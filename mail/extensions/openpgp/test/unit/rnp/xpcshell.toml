@@ -61,6 +61,9 @@ skip-if = ["os != 'linux'"]
 
 ["test_noGnuPGPrompt.js"]
 
+["test_section7Matrix.js"]
+skip-if = ["os != 'linux'"]
+
 ["test_secretKeys.js"]
 
 ["test_strip.js"]

@@ -76,6 +76,30 @@ export var GPGME = {
   },
 
   /**
+   * Whether a gpgme error is the user cancelling a passphrase prompt.
+   *
+   * A cancellation is not a failure, and the design requires the two to be
+   * distinguishable: "Signing was cancelled" is the message, and the send is
+   * aborted with the message kept rather than reported as broken. Before this,
+   * a cancellation and a failure arrived as the same thing -- an unexplained
+   * failure -- so the distinction was unreachable.
+   *
+   * gpgme packs a source in the high byte, and a cancellation can come from
+   * either the agent or pinentry depending on which of them handled the
+   * refusal, so any source carrying GPG_ERR_CANCELED counts.
+   *
+   * @param {number} code - A packed gpgme error.
+   * @returns {boolean} True when the user cancelled.
+   */
+  isCancellation(code) {
+    if (!code || !GPGMELib) {
+      return false;
+    }
+    const errCode = Number(code) & GPGMELib.GPG_ERR_CODE_MASK;
+    return errCode == GPGMELib.GPG_ERR_CANCELED;
+  },
+
+  /**
    * Record a gpgme failure where the caller will see it.
    *
    * Both the number and the words, because the number is what a bug report
@@ -90,6 +114,13 @@ export var GPGME = {
     }
     resultStatus.exitCode = Number(code) || -1;
     resultStatus.errorMsg = this.strerror(code);
+    // A cancellation is recorded as well as returned, so a caller that inspects
+    // the status object rather than catching an error can still tell the two
+    // apart. Design 5.7 requires a cancelled prompt to abort the send with the
+    // message kept, which is a different action from reporting a failure.
+    if (this.isCancellation(code)) {
+      resultStatus.cancelled = true;
+    }
   },
 
   /**
