@@ -1,4 +1,4 @@
-${PKG_INSTALL_PATH}/thunderbird usr/bin/${PKG_NAME}
+${PKG_INSTALL_PATH}/${PKG_NAME} usr/bin/${PKG_NAME}
 ${PKG_INSTALL_PATH}/chrome/icons/default/default16.png usr/share/icons/hicolor/16x16/apps/${Icon}.png
 ${PKG_INSTALL_PATH}/chrome/icons/default/default22.png usr/share/icons/hicolor/22x22/apps/${Icon}.png
 ${PKG_INSTALL_PATH}/chrome/icons/default/default24.png usr/share/icons/hicolor/24x24/apps/${Icon}.png

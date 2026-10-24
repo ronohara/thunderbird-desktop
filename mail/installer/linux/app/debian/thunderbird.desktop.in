@@ -97,7 +97,7 @@ Icon=${Icon}
 Categories=Network;Email;
 MimeType=message/rfc822;x-scheme-handler/mailto;x-scheme-handler/net.thunderbird;text/calendar;text/vcard;text/x-vcard;x-scheme-handler/webcal;x-scheme-handler/webcals;x-scheme-handler/mid;
 StartupNotify=true
-StartupWMClass=thunderbird
+StartupWMClass=${REMOTING_NAME}
 Actions=ComposeMessage;OpenAddressBook;
 
 [Desktop Action ComposeMessage]
