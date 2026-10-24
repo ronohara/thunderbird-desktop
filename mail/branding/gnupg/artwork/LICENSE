@@ -1,0 +1,39 @@
+The coiled-snake mark in this directory (w-w3.svg and its PNG ladder) is
+original artwork made for this fork. It is under the MPL 2, as below.
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+Scope, because this directory also holds someone else's work
+-------------------------------------------------------------
+
+This file covers the snake mark only:
+
+    w-w3.svg, w-w3-16.png, w-w3-22.png, w-w3-24.png, w-w3-32.png,
+    w-w3-48.png, w-w3-64.png, w-w3-128.png, w-w3-256.png
+
+It does NOT cover anything under gnupg/, which is GnuPG's own artwork
+and carries its own terms -- GPL version 3 or later, or CC-BY-SA 4.0
+for the logos, and SIL Open Font License 1.1 for the three banner
+fonts. See gnupg/README (verbatim, from upstream) and gnupg/PROVENANCE.md
+for which licence applies to what. Do not read this file as relicensing
+anything under gnupg/.
+
+No trademark rights are granted here. The MPL grants copyright
+permission, not permission to use a name or a mark, and this fork's mark
+is deliberately not derived from either party's artwork -- see design
+section 11.9.2.
+
+Where the drawing came from
+---------------------------
+
+Drawn procedurally for this fork: a centreline curve expanded into a
+filled polygon with a width profile, shaded by concentric shells, with
+the head as part of the same tube. No part of it is traced from, or
+recoloured from, Mozilla's bird or GnuPG's wing.
+
+One element has a documented outside origin and it is not in these
+files: the message indicator that accompanies this work embeds the wing
+from GnuPG's artwork, under GnuPG's licence. That graphic lives with
+design section 14, not here.
