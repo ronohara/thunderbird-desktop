@@ -72,6 +72,8 @@ skip-if = ["os != 'linux'"]
 
 ["test_signingSubkeyChoice.js"]
 
+["test_stage10.js"]
+
 ["test_strip.js"]
 
 ["test_uid.js"]
