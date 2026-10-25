@@ -79,13 +79,20 @@ function setIgnoreStatusFromMimePart(mimePart) {
  * @param {string} mimePartNumber - Should be set to the MIME part number
  *   that triggers this status update. If the value matches a currently
  *   ignored MIME part, then this function call will be ignored.
+ * @param {?string} engine - Which engine handled the message, when the
+ *   profile records it: `"gnupg"`, or null for unknown or for the internal
+ *   engine. Separate from `tech` on purpose -- `tech` is what the message
+ *   *is* (OpenPGP) and is what the security panel dispatches on and CSS
+ *   styles; the engine is *who processed it*, and the two are different
+ *   facts. "gnupg" shows the wing mark and names GnuPG in the label.
  */
 function setMessageCryptoBox(
   tech,
   encryptedState,
   signedState,
   forceShow,
-  mimePartNumber
+  mimePartNumber,
+  engine = null
 ) {
   if (
     !!gIgnoreStatusFromMimePart &&
@@ -99,16 +106,42 @@ function setMessageCryptoBox(
   const signedIcon = document.getElementById("signedHdrIcon");
   const button = document.getElementById("encryptionTechBtn");
   const buttonText = button.querySelector(".crypto-label");
+  const mark = document.getElementById("gnupgWingIcon");
 
   const hidden = !forceShow && (!tech || (!encryptedState && !signedState));
+  const gnupg = !hidden && engine == "gnupg";
   container.hidden = hidden;
   button.hidden = hidden;
   if (hidden) {
     container.removeAttribute("tech");
+    container.removeAttribute("engine");
+    buttonText.removeAttribute("data-l10n-id");
     buttonText.textContent = "";
+    mark.hidden = true;
+    mark.removeAttribute("src");
   } else {
     container.setAttribute("tech", tech);
-    buttonText.textContent = tech;
+    if (gnupg) {
+      container.setAttribute("engine", "gnupg");
+      // The label is localized rather than a literal, so a locale that writes
+      // the name differently can. `openpgp-openpgp` is the same string for the
+      // other engine, left alone here so that this change does not alter the
+      // badge for messages the internal engine handled.
+      document.l10n.setAttributes(buttonText, "openpgp-gnupg");
+      mark.hidden = false;
+      if (!mark.hasAttribute("src")) {
+        mark.setAttribute("src", "chrome://branding/content/gnupg-wing.svg");
+      }
+    } else {
+      container.removeAttribute("engine");
+      // `tech` is a plain string today, and clearing the l10n id first matters:
+      // a translation requested for the GnuPG badge would otherwise land after
+      // this assignment and overwrite it.
+      buttonText.removeAttribute("data-l10n-id");
+      buttonText.textContent = tech;
+      mark.hidden = true;
+      mark.removeAttribute("src");
+    }
   }
 
   if (encryptedState) {
@@ -538,6 +571,12 @@ function msgHdrViewSMIMEOnLoad() {
   window.crypto.enableSmartCardEvents = true;
   document.addEventListener("smartcard-insert", onSmartCardChange);
   document.addEventListener("smartcard-remove", onSmartCardChange);
+  // The provenance mark ships with the `gnupg` branding only, so another
+  // branding has no such file. A broken image in the header is worse than the
+  // label alone, which still names the engine, so the mark hides itself.
+  document.getElementById("gnupgWingIcon")?.addEventListener("error", event => {
+    event.target.hidden = true;
+  });
   if (!gSMIMEBundle) {
     gSMIMEBundle = Services.strings.createBundle(
       "chrome://messenger-smime/locale/msgReadSMIMEOverlay.properties"

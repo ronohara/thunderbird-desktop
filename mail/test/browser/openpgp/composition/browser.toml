@@ -22,6 +22,8 @@ support-files = ["../data/**"]
 
 ["browser_composerKeyChoice.js"]
 
+["browser_keyAssistantSource.js"]
+
 ["browser_composeEncrypted.js"]
 
 ["browser_composeSigned.js"]

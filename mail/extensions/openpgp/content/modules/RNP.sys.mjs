@@ -623,6 +623,24 @@ export class DecryptVerifyResult {
   sigDetails = { sigDate: null };
   /** @type {object} */
   encToDetails = { myRecipKey: {}, allRecipKeys: [] };
+  /**
+   * Which engine produced `decryptedData`, when it is not this one.
+   *
+   * `null` means librnp decrypted it, which is the ordinary case. `"gnupg"`
+   * means the fall-through at the end of `decryptArray()` handed the work to
+   * GPGME and its result came back. The value is a fact about *decryption* and
+   * nothing else: signature verification is always librnp, whatever keyring
+   * the signing key lives in, so a message verified here may well be signed by
+   * a key that lives in GnuPG.
+   *
+   * Deliberately not a key id. Which key was used is a separate question that
+   * `gpgme_op_decrypt_result` does not answer directly, which is why the
+   * existing TODO beside the fall-through leaves it open; this field does not
+   * need it.
+   *
+   * @type {?string}
+   */
+  decryptionEngine = null;
 }
 
 export var RNP = {
@@ -2665,6 +2683,12 @@ export var RNP = {
         } else {
           retval2 = await RNP.decrypt(r2.decryptedData, options, true);
         }
+
+        // The recursive call decrypts what GPGME already unwrapped -- it
+        // finishes the job rather than doing it -- so the engine that produced
+        // the plaintext is GnuPG. Marked on the result that is returned, which
+        // is the one whose status flags reach the header.
+        retval2.decryptionEngine = "gnupg";
 
         return retval2;
       }

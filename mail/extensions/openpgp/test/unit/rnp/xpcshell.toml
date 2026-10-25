@@ -19,6 +19,8 @@ run-sequentially = true  # writes the profile-global acceptance store
 
 ["test_badKeys.js"]
 
+["test_decryptionEngine.js"]
+
 ["test_encryptAndOrSign.js"]
 
 ["test_externalGnuPGSigning.js"]
@@ -66,6 +68,8 @@ skip-if = ["os != 'linux'"]
 skip-if = ["os != 'linux'"]
 
 ["test_keyManagementOps.js"]
+
+["test_keyOriginSource.js"]
 
 ["test_keyPrecedence.js"]
 

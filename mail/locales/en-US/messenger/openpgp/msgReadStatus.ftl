@@ -18,6 +18,9 @@ openpgp-view-signer-key =
 openpgp-view-your-encryption-key =
     .label = View your decryption key
 openpgp-openpgp = OpenPGP
+# The label on the message header badge when GnuPG, rather than Thunderbird's
+# own engine, processed the message. GnuPG's wing is shown beside it.
+openpgp-gnupg = GnuPG
 
 openpgp-no-sig = No Digital Signature
 openpgp-no-sig-info = This message does not include the sender’s digital signature. The absence of a digital signature means that the message could have been sent by someone pretending to have this email address. It is also possible that the message has been altered while in transit over the network.

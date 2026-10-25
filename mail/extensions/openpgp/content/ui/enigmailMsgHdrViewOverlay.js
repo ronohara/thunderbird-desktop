@@ -43,6 +43,8 @@ Enigmail.hdrView = {
   msgSignatureDate: null,
   msgEncryptionKeyId: null,
   msgEncryptionAllKeyIds: null,
+  // "gnupg" when GPGME produced the plaintext of the message on screen.
+  msgDecryptionEngine: null,
   msgHasKeyAttached: false,
 
   ignoreStatusFromMimePart: "",
@@ -58,6 +60,7 @@ Enigmail.hdrView = {
     this.msgSignatureDate = null;
     this.msgEncryptionKeyId = null;
     this.msgEncryptionAllKeyIds = null;
+    this.msgDecryptionEngine = null;
     this.msgHasKeyAttached = false;
     for (const value of ["decryptionFailed", "brokenExchange"]) {
       Enigmail.msg.removeNotification(value);
@@ -156,6 +159,9 @@ Enigmail.hdrView = {
       if ("packetDump" in o && o.packetDump) {
         this.packetDump = o.packetDump;
       }
+      // Absent on older callers and on signed-only messages; null means
+      // librnp, which is the ordinary case.
+      this.msgDecryptionEngine = o.decryptionEngine ?? null;
     }
 
     this.msgSignatureDate = sigDetails?.sigDate;
@@ -322,6 +328,78 @@ Enigmail.hdrView = {
   },
 
   /**
+   * Which engine handled the message on screen, when the profile records it.
+   *
+   * Two sources, in this order, and they answer different questions:
+   *
+   *   1. **Decryption.** `RNP.decryptArray()` sets `decryptionEngine` when it
+   *      hands the work to GPGME after librnp could not decrypt. That is what
+   *      happened to *this* message, so it wins.
+   *   2. **Composition.** For a message the user sent, `is_gnupg_key_id` on
+   *      the identity that authored it. That is how the message was made, not
+   *      how it was read, and it is the only fact available for a sent message
+   *      whose stored copy librnp can decrypt.
+   *
+   * Neither describes a signature. Verification is librnp everywhere, so a
+   * message signed with a key from `~/.gnupg` is still verified inside
+   * Thunderbird -- correctly, and worth remembering before reading more into
+   * the badge than it says.
+   *
+   * Provenance is deliberately not inferred from the signature: verification
+   * is librnp's whatever keyring the key lives in, so a message signed with a
+   * key from `~/.gnupg` is still verified inside Thunderbird.
+   *
+   * The identity is matched on the From address, with no fallback to the
+   * default identity. `MailUtils.getIdentityForHeader()` does fall back, and
+   * using it here would report a GnuPG sender for a message from a stranger
+   * whenever the default identity has the flag set -- exactly the over-claim
+   * this method exists to avoid.
+   *
+   * No cache: the call is a folder-flag test and an address comparison, and
+   * the status update runs a handful of times per message.
+   *
+   * @param {nsIMsgDBHdr} [hdr] - Defaults to the message on screen.
+   * @param {nsIMsgFolder} [folder] - Defaults to its folder.
+   * @returns {?string} `"gnupg"` when known, otherwise null.
+   */
+  getMessageEngine(hdr = gMessage, folder = gFolder) {
+    // Decryption first: for a received message this is the only fact there is,
+    // and for a sent one it describes what actually happened when the stored
+    // copy was opened rather than how the message was composed.
+    if (this.msgDecryptionEngine) {
+      return this.msgDecryptionEngine;
+    }
+
+    if (!hdr || !folder) {
+      return null;
+    }
+    // Only the Sent folder: a draft or a queued message has not been sent, so
+    // the identity's engine describes an intention rather than this message.
+    if (!folder.isSpecialFolder(Ci.nsMsgFolderFlags.SentMail, true)) {
+      return null;
+    }
+    // A strict match on the From address, across every identity: a Sent folder
+    // under Local Folders holds messages sent from any account, so scoping to
+    // the folder's server would attribute none of them.
+    //
+    // `MailUtils.getBestIdentity()` cannot be used here. With no match it
+    // returns `identities[0]` even when `useDefault` is false, so it can never
+    // answer "this was not sent by one of my identities" -- and the answer it
+    // gives instead would attribute a stranger's message to GnuPG.
+    const authors = MailServices.headerParser
+      .makeFromDisplayAddress(hdr.author ?? "")
+      .map(entry => entry.email.toLowerCase());
+    const identity = MailServices.accounts.allIdentities.find(
+      candidate =>
+        candidate.email && authors.includes(candidate.email.toLowerCase())
+    );
+    if (!identity) {
+      return null;
+    }
+    return identity.getBoolAttribute("is_gnupg_key_id") ? "gnupg" : null;
+  },
+
+  /**
    * Should be called whenever more information about the OpenPGP
    * message state became available, such as encryption or signature
    * status, or the availability of an attached key.
@@ -336,7 +414,8 @@ Enigmail.hdrView = {
       this.msgEncryptedStateString,
       this.msgSignedStateString,
       this.msgHasKeyAttached,
-      triggeredByMimePartNumber
+      triggeredByMimePartNumber,
+      this.getMessageEngine()
     );
   },
 

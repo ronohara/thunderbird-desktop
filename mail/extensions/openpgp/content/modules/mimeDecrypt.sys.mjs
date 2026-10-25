@@ -595,6 +595,8 @@ MimeDecryptHandler.prototype = {
               "packetDump" in this.returnStatus
                 ? this.returnStatus.packetDump
                 : "",
+            // Which engine produced the plaintext, when it was not librnp.
+            decryptionEngine: this.returnStatus.decryptionEngine ?? null,
           }),
           this.mimePartNumber
         );

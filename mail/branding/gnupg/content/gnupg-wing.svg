@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GnuPG's wing, as the provenance mark for the message header.
+
+  Exported from the approved drawing, not rebuilt from GnuPG's artwork: the
+  path data and its matrix below are copied verbatim from
+  gnupg-message-indicator.svg in the design repository, which in turn copied
+  them from gnupg/artwork/icons/wing.svg. Nothing here is retyped, so the
+  geometry cannot drift from the drawing it was approved as.
+
+  The only differences from the drawing's own element: its x and y attributes
+  are gone, because they position a nested svg and mean nothing on a root; the
+  fill is set as an attribute rather than through style; and a stroke-width is
+  absent, which the drawing had already dropped and which never had an effect
+  without a stroke.
+
+  One size, not two. setMessageCryptoBox() sets src on an img, as it does for
+  the two status icons beside it, so the form is SVG and a single file serves
+  16px and the HiDPI double. A raster pair would be a second representation of
+  the same shape that nothing consumes.
+
+  The mark sits in the left of its box, because that is how the approved
+  drawing has it: the ink is 193.6 of the 243 unit width and fills the 256
+  unit height, so at 16px it is 12.1 by 16.0 with about 3 units of space to
+  its right. That space is part of the approved composition rather than an
+  accident, and the header's own 3px gap is applied after it.
+
+  Artwork: GnuPG's wing, Copyright (c) 2006 g10 Code GmbH, released under the
+  GNU GPL v3 or later, or at your option CC BY-SA 4.0; see
+  artwork/gnupg/README. This file is not MPL like the code around it; the
+  geometry is unmodified and the attribution travels with it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 243 256" preserveAspectRatio="xMidYMid meet">
+    <g transform="matrix(0.80225518,0,0,1,-0.01977448,-142.26666)">
+      <path fill="#0093dd" d="M 27.5,397.9 -0.1,341.4 C 11.3,295 30.7,229.7 93.5,223.2 c 62.8,-6.5 88.2,-23.9 103.6,-37.1 15.4,-13.2 54.9,-69.9 41.4,-29.5 -13.5,40.3 -57.6,116.2 -126.7,116.4 30.1,5.8 57.4,-2.1 73.1,-13.2 15.7,-11.1 39.9,-37.6 23,-5.5 -16.9,32.1 -46.6,67.9 -123.1,66.4 24.3,9.2 60.6,8.5 79.4,1.6 18.8,-6.9 36.8,-25.6 20.3,-1.1 -16.6,24.5 -50.3,43 -80.8,41.6 -30.5,-1.4 -44.5,-3.7 -76.2,35.1 z"/>
+    </g>
+  </svg>

@@ -491,6 +491,26 @@ export var EnigmailKeyRing = {
   },
 
   /**
+   * Where GnuPG keeps the keyring this profile is reading.
+   *
+   * For display only: the Key Assistant names the source of a key, and "GnuPG
+   * keyring" alone does not say which one when someone runs several. Never
+   * used to open anything.
+   *
+   * @returns {string} The directory, or the string a user recognizes when
+   *   `GNUPGHOME` is unset.
+   */
+  getGnuPgKeyringPath() {
+    if (Services.env.exists("GNUPGHOME")) {
+      return Services.env.get("GNUPGHOME");
+    }
+    // gpg's own default. Named rather than resolved: reading the home
+    // directory of the process to form a guess would be worse than saying
+    // what gpg itself would use.
+    return "~/.gnupg";
+  },
+
+  /**
    * Drop the transient cache, so the next lookup re-reads GnuPG.
    */
   clearGnuPgKeyCache() {
@@ -2368,6 +2388,25 @@ export var EnigmailKeyRing = {
     for (const keyObj of candidateKeys) {
       const keyMeta = {};
       keyMeta.keyObj = keyObj;
+
+      // Where this key came from, when it came from GnuPG.
+      //
+      // The Key Assistant asks the user to judge a key it found, and an answer
+      // that omits the source is incomplete: for a key GnuPG holds there is no
+      // collected-key record to name it, so the origin line said nothing at
+      // all. `openpgp-key-assistant-key-collected-gnupg` has existed as a
+      // localized string with no producer; this is its producer.
+      //
+      // Deliberately not `collectedKey`. That field carries a `pubKey` which
+      // the assistant imports on the user's behalf -- and a key GnuPG holds is
+      // already present, so it must never be imported. Under Item 10 it is not
+      // written to the profile either, which means this source is the *only*
+      // one for such a key rather than an additional one.
+      if (this.getGnuPgKeyById(keyObj.keyId)) {
+        keyMeta.gnupgKey = {
+          sources: [{ type: "gnupg", description: this.getGnuPgKeyringPath() }],
+        };
+      }
 
       let uidMatch = false;
       for (const uid of keyObj.userIds) {

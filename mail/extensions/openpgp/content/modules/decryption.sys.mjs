@@ -118,7 +118,8 @@ export var EnigmailDecryption = {
    * @param {object} blockSeparationObj
    * @param {object} extraDetailsObj
    * @param {JSON} extraDetailsObj.value - JSON string with
-   *   with (optional) additional data: encryptedTo, packetDump.
+   *   (optional) additional data: encryptedTo, packetDump,
+   *   decryptionEngine.
    * @returns {Promise<string>} the plaintext. Returns "" if error, or if this
    *    was called just to verify a signed message.)
    */
@@ -322,6 +323,10 @@ export var EnigmailDecryption = {
       extraDetailsObj.value = JSON.stringify({
         encryptedTo: result.encToDetails,
         packetDump: "packetDump" in result ? result.packetDump : "",
+        // Null when librnp did the work. Carried here because this object is
+        // already the channel for everything the header needs that is not a
+        // status flag.
+        decryptionEngine: result.decryptionEngine ?? null,
       });
       lazy.log.debug(`Extra decryption details: ${extraDetailsObj.value}`);
     }

@@ -98,6 +98,10 @@ openpgp-key-assistant-key-collected-keyserver = keyserver
 openpgp-key-assistant-key-collected-wkd = Web Key Directory
 # Do not translate GnuPG, it's a name of other software.
 openpgp-key-assistant-key-collected-gnupg = GnuPG keyring
+# Shown after the source line for a key that GnuPG holds. Such a key is not
+# copied into the profile, so this is its only origin rather than one of
+# several.
+openpgp-key-assistant-key-source-gnupg-only = (the only copy — not stored in this profile)
 
 # Variables:
 # $count (Number) - Number of found keys.

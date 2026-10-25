@@ -611,6 +611,15 @@ var gKeyAssistant = {
 
         const acceptedKeys = keyMetas.filter(k => k.readiness == "accepted");
         if (acceptedKeys.length) {
+          // The origin is shown here as well as in the resolve view, because
+          // an accepted key never reaches the resolve view -- and a key GnuPG
+          // holds is accepted automatically, so this is the *only* place its
+          // origin can appear. For any other key `fillKeyOriginAndStatus()`
+          // writes nothing, so no other row changes.
+          const detail = document.createElement("div");
+          detail.classList.add("key-info-block");
+          gKeyAssistant.fillKeyOriginAndStatus(detail, acceptedKeys[0]);
+
           const button = document.createElement("button");
           document.l10n.setAttributes(
             button,
@@ -619,8 +628,9 @@ var gKeyAssistant = {
           button.addEventListener("click", () => {
             gKeyAssistant.viewKeyFromOverview(addr, acceptedKeys[0]);
           });
+          detail.appendChild(button);
 
-          this.addToReadyList(addr, button);
+          this.addToReadyList(addr, detail);
           this.usableKeys++;
         } else {
           const descriptionDiv = document.createElement("div");
@@ -912,21 +922,25 @@ var gKeyAssistant = {
   },
 
   fillKeyOriginAndStatus(element, keyMeta) {
-    // The key was collected from somewhere.
-    if (keyMeta.collectedKey) {
+    // Where the key came from. Two shapes, one rendering: a key collected from
+    // the outside world carries `collectedKey`, and a key GnuPG holds carries
+    // `gnupgKey`. They are kept apart because only the first can be imported
+    // on the user's behalf -- the second is already present.
+    const origin = keyMeta.collectedKey ?? keyMeta.gnupgKey;
+    if (origin) {
       const sourceSpan = document.createElement("span");
       document.l10n.setAttributes(
         sourceSpan,
         "openpgp-key-assistant-key-source",
         {
-          count: keyMeta.collectedKey.sources.length,
+          count: origin.sources.length,
         }
       );
       element.append(sourceSpan, ": ");
       const linkSpan = document.createElement("span");
       linkSpan.classList.add("comma-separated");
 
-      const sourceLinks = keyMeta.collectedKey.sources.map(source => {
+      const sourceLinks = origin.sources.map(source => {
         source.type = source.type.toLowerCase(); // Earlier "WKD" was "wkd".
         const a = document.createElement("a");
         if (source.uri) {
@@ -944,6 +958,7 @@ var gKeyAssistant = {
         // openpgp-key-assistant-key-collected-autocrypt
         // openpgp-key-assistant-key-collected-keyserver
         // openpgp-key-assistant-key-collected-wkd
+        // openpgp-key-assistant-key-collected-gnupg
         document.l10n.setAttributes(
           span,
           `openpgp-key-assistant-key-collected-${source.type}`
@@ -953,6 +968,19 @@ var gKeyAssistant = {
       });
       linkSpan.append(...sourceLinks);
       element.appendChild(linkSpan);
+
+      if (keyMeta.gnupgKey) {
+        // Item 10 means a key GnuPG holds is not written to the profile, so
+        // there is no second copy to mention. Said plainly, because "collected
+        // from GnuPG keyring" on its own reads like one of several places this
+        // key was found.
+        const only = document.createElement("span");
+        document.l10n.setAttributes(
+          only,
+          "openpgp-key-assistant-key-source-gnupg-only"
+        );
+        element.append(" ", only);
+      }
       return;
     }
 

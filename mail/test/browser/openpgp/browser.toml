@@ -48,6 +48,8 @@ run-if = [
 
 ["browser_perm_decrypt.js"]
 
+["browser_provenanceBadge.js"]
+
 ["browser_pgpSignedPartDispatch.js"]
 
 ["browser_upload.js"]
