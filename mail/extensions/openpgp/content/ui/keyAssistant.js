@@ -19,9 +19,6 @@ ChromeUtils.defineESModuleGetters(this, {
   EnigmailKeyRing: "chrome://openpgp/content/modules/keyRing.sys.mjs",
   GPGME: "chrome://openpgp/content/modules/GPGME.sys.mjs",
   KeyLookupHelper: "chrome://openpgp/content/modules/keyLookupHelper.sys.mjs",
-  firstUsableKey: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
-  getKeyList: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
-  moveKey: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
   OpenPGPAlias: "chrome://openpgp/content/modules/OpenPGPAlias.sys.mjs",
   PgpSqliteDb2: "chrome://openpgp/content/modules/sqliteDb.sys.mjs",
   // FIXME: using this creates a conflict with another file where this symbol
@@ -39,6 +36,13 @@ var { EnigmailWindows } = ChromeUtils.importESModule(
 // form rather than a workaround for a collision.
 var { GnuPGAgent } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
+);
+// Direct imports for the same reason as GnuPGAgent above, and it is not a
+// workaround: adding these three to the `defineESModuleGetters(this, ...)`
+// block made the whole script fail to load in the composer, which surfaced as
+// "gKeyAssistant is undefined" at every caller rather than as an error here.
+var { firstUsableKey, getKeyList, moveKey } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/identityKeys.sys.mjs"
 );
 
 window.addEventListener("load", () => {

@@ -79,7 +79,20 @@ export var EnigmailWindows = {
       "chrome://openpgp/content/ui/keyDetailsDlg.xhtml",
       "KeyDetailsDialog",
       "dialog,modal,centerscreen,resizable",
-      { keyId, modified: lazy.EnigmailKeyRing.clearCache },
+      {
+        keyId,
+        // Wrapped, not passed as `lazy.EnigmailKeyRing.clearCache` directly.
+        // The dialog calls this as `window.arguments[0].modified()`, which
+        // makes `this` the arguments object -- an object with no clearCache
+        // methods on it -- so `clearCache`'s own `this.clearGnuPGKeyCache()`
+        // threw "is not a function".
+        //
+        // The symptom was a subkey that was added correctly and then never
+        // appeared: keyDetailsDlg's onDataModified() clears the cache, calls
+        // enableRefresh() (this callback), and only then calls reloadData().
+        // The throw skipped the reload, so the list stayed as it was.
+        modified: () => lazy.EnigmailKeyRing.clearCache(),
+      },
       resultObj
     );
     return resultObj.refresh;
