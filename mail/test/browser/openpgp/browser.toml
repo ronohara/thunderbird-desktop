@@ -64,6 +64,12 @@ run-if = [
 
 ["browser_signatureKeyActions.js"]
 
+["browser_autocryptImport.js"]
+
+["browser_setupCodeDialog.js"]
+
+["browser_setupMessageEntry.js"]
+
 ["browser_pgpSignedPartDispatch.js"]
 
 ["browser_upload.js"]

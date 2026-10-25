@@ -4,6 +4,17 @@
 
 "use strict";
 
+var { AutocryptSetup } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/autocryptSetup.sys.mjs"
+);
+/**
+ * A synchronous Localization instance of this dialog's own.
+ *
+ * `document.l10n` is asynchronous and `formatValueSync()` throws on it once its
+ * state is async; this file reports import failures synchronously, so it needs
+ * values now rather than later.
+ */
+var l10n = new Localization(["messenger/openpgp/openpgp.ftl"], true);
 var { MailServices } = ChromeUtils.importESModule(
   "resource:///modules/MailServices.sys.mjs"
 );
@@ -1154,6 +1165,101 @@ async function openPgpImportStart() {
   hideOverlay(overlay);
 
   kGenerating = false;
+}
+
+/**
+ * Import a key from an Autocrypt setup message (Item 99).
+ *
+ * The flow the specification describes: the message is detected, its structure
+ * validated, the code requested, and the payload adopted. The three cases have
+ * different behaviour and are kept apart, because conflating them produces the
+ * worst outcomes -- a `v2` message offered as `v1`, or a broken message offered
+ * with a prompt that cannot succeed.
+ *
+ * @param {string} [mimePartText] - The `application/autocrypt-setup` part. When
+ *   absent, this is a no-op: the button is only shown once a message has been
+ *   found, so there is nothing to guess at.
+ */
+async function importSetupMessage(mimePartText) {
+  if (!mimePartText) {
+    return;
+  }
+
+  const classified = AutocryptSetup.classify(mimePartText);
+  if (classified.state == "notASetupMessage") {
+    // Ignored entirely, and silently: a format this build does not know must
+    // not produce a dialog here, or every future version would.
+    return;
+  }
+  if (classified.state == "malformed") {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-malformed", {
+        reason: classified.reason ?? "",
+      })
+    );
+    return;
+  }
+
+  // The code, requested after the message has been accepted rather than
+  // before: a user should not be asked for a code for a message that turns out
+  // to be unusable.
+  const code = { value: "" };
+  const ok = Services.prompt.promptPassword(
+    window,
+    l10n.formatValueSync("openpgp-setup-code-title"),
+    l10n.formatValueSync("openpgp-setup-code-reentry-intro"),
+    code,
+    null,
+    { value: false }
+  );
+  if (!ok) {
+    return;
+  }
+
+  const unwrapped = await AutocryptSetup.unwrap(classified.armour, code.value);
+  if (unwrapped.state == "wrongCode") {
+    // A different fact from a damaged message: the code authenticates as well
+    // as decrypts, so this says the code was wrong, not the file.
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-wrong-code")
+    );
+    return;
+  }
+  if (unwrapped.state != "ok") {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-malformed", {
+        reason: unwrapped.reason ?? "",
+      })
+    );
+    return;
+  }
+
+  const preferEncrypt = AutocryptSetup.preferenceOf(unwrapped.keyBlock);
+  const result = await AutocryptSetup.adopt({
+    keyBlock: unwrapped.keyBlock,
+    address: gIdentity.email,
+    preferEncrypt,
+    identity: gIdentity,
+  });
+  if (!result.ok) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-failed", {
+        reason: result.error ?? "",
+      })
+    );
+    return;
+  }
+
+  kGenerating = false;
+  window.close();
 }
 
 /**

@@ -1571,7 +1571,9 @@ async function keyWizardSuccess(keyId) {
   );
   document.getElementById("openPgpNotification").collapsed = false;
 
-  useOpenPGPKey(keyId);
+  // Awaited, so this callback resolves only once the key list has been
+  // rebuilt. Both callers are already `async`.
+  await useOpenPGPKey(keyId);
 }
 
 /**
@@ -1588,7 +1590,7 @@ async function keyExternalSuccess(keyId) {
   document.getElementById("openPgpNotification").collapsed = false;
 
   gIdentity.setUnicharAttribute("last_entered_external_gnupg_key_id", keyId);
-  useOpenPGPKey(keyId);
+  await useOpenPGPKey(keyId);
 }
 
 /**
@@ -1599,6 +1601,9 @@ async function keyExternalSuccess(keyId) {
  * NOTE! Please always go through this to change gKeyId!
  *
  * @param {?string} keyId - Id of key that the key wizard set up.
+ * @returns {Promise<void>} Resolves once the key list has been rebuilt, which
+ *   is the point at which the pane and the identity agree. Await it before
+ *   reading anything the rebuild produces.
  */
 function useOpenPGPKey(keyId) {
   // Rebuild the UI so that any new keys are listed.
@@ -1635,7 +1640,15 @@ function useOpenPGPKey(keyId) {
       gIdentity.getUnicharAttribute("last_entered_external_gnupg_key_id")
   );
 
-  reloadOpenPgpUI();
+  // Returned, not merely called.
+  //
+  // Everything above is synchronous, but the radiogroup is rebuilt by
+  // `reloadOpenPgpUI()`, which awaits the keyring first. A caller that does not
+  // await this therefore returns while the list still holds only "None" -- and
+  // the identity attribute it just set is true at that moment, so a caller
+  // waiting on the attribute reads the list too early. That is exactly the
+  // `itemCount 1 == 2` failure in `browser_keyWizard.js`.
+  return reloadOpenPgpUI();
 }
 
 /**

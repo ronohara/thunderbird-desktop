@@ -420,17 +420,27 @@ add_task(async function generate_new_key() {
   await frameWinUnload;
 
   // The key wizard should automatically assign the newly generated key to the
-  // selected identity and close the dialog. Let's wait for that change.
+  // selected identity and close the dialog.
+  //
+  // The wait is on the **radiogroup**, not on the identity attribute. The
+  // attribute is set synchronously by `useOpenPGPKey()`, and the list is
+  // rebuilt afterwards by an async `reloadOpenPgpUI()` -- so waiting for the
+  // attribute returns while the list still holds only "None", and the
+  // assertions below then read a pane that has not caught up. That is one race
+  // producing both `itemCount 1 == 2` and `openPgpNone selected`: they were
+  // never two defects.
+  const radiogroup = tabDocument.getElementById("openPgpKeyListRadio");
   await TestUtils.waitForCondition(
-    () => gIdentity.getUnicharAttribute("openpgp_key_id"),
-    "Timeout waiting for the newly generated key to be set"
+    () => radiogroup.itemCount == 2,
+    "Timeout waiting for the key list to be rebuilt with the new key"
   );
+
   const createdKeyId = gIdentity.getUnicharAttribute("openpgp_key_id");
   Assert.ok(createdKeyId, "identity should have key");
 
-  // The OpenPGP Key List radiogroup should only have 2 items now (None, and a key).
+  // The OpenPGP Key List radiogroup should have 2 items (None, and a key).
   Assert.equal(
-    tabDocument.getElementById("openPgpKeyListRadio").itemCount,
+    radiogroup.itemCount,
     2,
     "The OpenPGP Key List radiogroup should have 2 items"
   );

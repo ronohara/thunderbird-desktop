@@ -125,6 +125,13 @@
                 data-l10n-id="openpgp-key-man-gen-revocation"
                 oncommand="prepareRevocation()"
               />
+              <!-- Item 98: creation is user-initiated, and this is the only
+                   way to initiate it. A menu click cannot happen by itself. -->
+              <menuitem
+                id="createSetupMessage"
+                data-l10n-id="openpgp-key-man-create-setup-message"
+                oncommand="createAutocryptSetupMessage()"
+              />
               <menuseparator />
               <menuitem
                 id="refreshKeys"

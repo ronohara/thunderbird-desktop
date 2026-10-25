@@ -7,6 +7,7 @@ openpgp.jar:
 % content openpgp %content/openpgp/
   content/openpgp/BondOpenPGP.sys.mjs              (content/BondOpenPGP.sys.mjs)
   content/openpgp/modules/acceptanceExport.sys.mjs (content/modules/acceptanceExport.sys.mjs)
+  content/openpgp/modules/autocryptSetup.sys.mjs       (content/modules/autocryptSetup.sys.mjs)
   content/openpgp/modules/armor.sys.mjs            (content/modules/armor.sys.mjs)
   content/openpgp/modules/CollectedKeysDB.sys.mjs  (content/modules/CollectedKeysDB.sys.mjs)
   content/openpgp/modules/constants.sys.mjs        (content/modules/constants.sys.mjs)
@@ -40,6 +41,7 @@ openpgp.jar:
   content/openpgp/modules/RNP.sys.mjs              (content/modules/RNP.sys.mjs)
   content/openpgp/modules/RNPLib.sys.mjs           (content/modules/RNPLib.sys.mjs)
   content/openpgp/modules/singletons.sys.mjs       (content/modules/singletons.sys.mjs)
+  content/openpgp/modules/setupCode.sys.mjs         (content/modules/setupCode.sys.mjs)
   content/openpgp/modules/sqliteDb.sys.mjs         (content/modules/sqliteDb.sys.mjs)
   content/openpgp/modules/streams.sys.mjs          (content/modules/streams.sys.mjs)
   content/openpgp/modules/trust.sys.mjs            (content/modules/trust.sys.mjs)
@@ -70,3 +72,5 @@ openpgp.jar:
   content/openpgp/ui/keyImportInfoDialog.xhtml       (content/ui/keyImportInfoDialog.xhtml)
   content/openpgp/ui/keyWizard.xhtml                 (content/ui/keyWizard.xhtml)
   content/openpgp/ui/rulesEditor.xhtml               (content/ui/rulesEditor.xhtml)
+  content/openpgp/ui/setupCodeDialog.js                (content/ui/setupCodeDialog.js)
+  content/openpgp/ui/setupCodeDialog.xhtml             (content/ui/setupCodeDialog.xhtml)

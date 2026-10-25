@@ -733,6 +733,24 @@ export var RNP = {
     return RNPLib.getRNPLibStatus();
   },
 
+  /**
+   * The live library wrapper, for a caller that has to drive librnp directly.
+   *
+   * `RNPLibLoader.init()` returns a *new* wrapper with a null `ffi` each time
+   * it is called -- the loaded library is shared, but the handle belongs to
+   * the instance that called `init()`. So a test that reaches for the loader
+   * gets an object it cannot use, and the only way to the ffi this build is
+   * actually using is through here.
+   *
+   * Read-only, and for diagnostics and tests rather than for the send path:
+   * `ffi` is null until `init()` has completed, which this does not force.
+   *
+   * @returns {?object} The wrapper, or null before initialisation.
+   */
+  getRNPLib() {
+    return RNPLib ?? null;
+  },
+
   async init() {
     if (!this.hasRan) {
       await this.once();
@@ -5329,6 +5347,422 @@ export var RNP = {
 
     return result;
   },
+
+  /**
+   * Export an identity's key as a Transferable Secret Key (RFC 9580 10.2).
+   *
+   * A public-key packet sequence with the Secret-Key and Secret-Subkey packets
+   * added, armoured, carrying the Autocrypt preference in an armour header,
+   * and cut at the armour's first end delimiter -- "trailing data after the
+   * first ASCII-armor ending delimiter MUST be stripped" is the specification's
+   * own clause, and it is the kind that is skipped until another
+   * implementation rejects the message.
+   *
+   * **This does not touch the stored key's protection, and the difference from
+   * the import path is deliberate.** The import path calls `unprotect()` and
+   * `setAutoPassphrase()` on each secret subkey before re-exporting, which is
+   * correct there: it is mid-import, the key is being replaced, and a
+   * passphrase the user typed once should not have to be typed again. Reusing
+   * that sequence here would leave the user's own key unprotected in their
+   * profile -- a security regression wearing the clothes of a convenience.
+   *
+   * So the export is a plain `rnp_key_export` with the secret flag and no
+   * unlock. What comes out carries whatever protection the key already had, and
+   * the key in the profile is untouched because nothing about it was written.
+   * The test asserts this the only way that means anything: by trying to unlock
+   * the key afterwards with no passphrase and requiring that it fails.
+   *
+   * @param {string} fpr - Primary key fingerprint of the identity's own key.
+   * @param {"mutual"|"nopreference"} preferEncrypt - The account's Autocrypt
+   *   preference. The two legal values, per the specification; anything else is
+   *   refused rather than passed through, because a receiver that does not
+   *   recognise a value treats it as absent and the sender would never know.
+   * @returns {?string} The armoured TSK, or null when the key is not present
+   *   or has no secret material.
+   */
+  exportSecretKeyForTransfer(fpr, preferEncrypt) {
+    if (preferEncrypt != "mutual" && preferEncrypt != "nopreference") {
+      throw new Error(
+        `Autocrypt-Prefer-Encrypt must be "mutual" or "nopreference", not ` +
+          `${JSON.stringify(preferEncrypt)}`
+      );
+    }
+
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(
+      RNPLib.ffi,
+      "0x" + String(fpr).replace(/^0x/i, "")
+    );
+    if (!handle || handle.isNull()) {
+      return null;
+    }
+
+    const output = new RNPLib.rnp_output_t();
+    let armoured = null;
+    try {
+      // Asked of the library rather than of a key object: whether there is
+      // secret material is librnp's fact, and a caller may hand this a
+      // fingerprint whose key object has not been read into the ring.
+      const haveSecret = new lazy.ctypes.bool();
+      if (RNPLib.rnp_key_have_secret(handle, haveSecret.address())) {
+        throw new Error("rnp_key_have_secret failed");
+      }
+      if (!haveSecret.value) {
+        return null;
+      }
+
+      if (RNPLib.rnp_output_to_memory(output.address(), 0)) {
+        throw new Error("rnp_output_to_memory failed");
+      }
+      // No unlock, no auto passphrase: see the comment above.
+      if (
+        RNPLib.rnp_key_export(
+          handle,
+          output,
+          RNPLib.RNP_KEY_EXPORT_ARMORED |
+            RNPLib.RNP_KEY_EXPORT_SUBKEYS |
+            RNPLib.RNP_KEY_EXPORT_SECRET
+        )
+      ) {
+        throw new Error("rnp_key_export failed");
+      }
+
+      const result_buf = new lazy.ctypes.uint8_t.ptr();
+      const result_len = new lazy.ctypes.size_t();
+      if (
+        RNPLib.rnp_output_memory_get_buf(
+          output,
+          result_buf.address(),
+          result_len.address(),
+          false
+        )
+      ) {
+        throw new Error("rnp_output_memory_get_buf failed");
+      }
+      armoured = lazy.ctypes
+        .cast(result_buf, lazy.ctypes.char.array(result_len.value).ptr)
+        .contents.readString();
+    } finally {
+      RNPLib.rnp_output_destroy(output);
+      RNPLib.rnp_key_handle_destroy(handle);
+    }
+
+    return armoured
+      ? this._prepareTransferKeyBlock(armoured, preferEncrypt)
+      : null;
+  },
+
+  /**
+   * Put an exported key block into the shape a setup message needs.
+   *
+   * Two steps, both from the specification rather than from taste: the
+   * Autocrypt preference goes in an armour header immediately after the BEGIN
+   * line -- where Enigmail put it, and Enigmail is the deployed implementation
+   * the specification describes -- and everything from the first end delimiter
+   * onwards is discarded.
+   *
+   * Split out so it can be tested without a key, because the stripping is the
+   * clause most likely to be got wrong and least likely to be noticed.
+   *
+   * @param {string} armoured
+   * @param {string} preferEncrypt
+   * @returns {string}
+   */
+  _prepareTransferKeyBlock(armoured, preferEncrypt) {
+    const normalised = armoured.replace(/\r\n/g, "\n");
+
+    const endMarker = normalised.indexOf("-----END PGP ");
+    let body = endMarker >= 0 ? normalised.slice(0, endMarker) : normalised;
+    if (endMarker >= 0) {
+      // The end line has no trailing newline after the slice; put one back so
+      // the block still ends as a block.
+      body += normalised.slice(endMarker).split("\n")[0] + "\n";
+    }
+
+    const lines = body.split("\n");
+    const begin = lines[0];
+    if (!begin?.startsWith("-----BEGIN PGP ")) {
+      return body;
+    }
+
+    // Armour headers live between the BEGIN line and the blank line that
+    // separates them from the body, and RFC 4880 requires that blank line.
+    //
+    // Dropping it is the mistake this function made first time round: the
+    // output then read `BEGIN`, header, base64 with no separation, and gpg
+    // rejected the first base64 line as `invalid armor header`. The message
+    // still looked like a key block to a human, which is exactly the kind of
+    // defect an assertion on shape alone does not catch -- hence the test
+    // checks the blank line and gpg parses the result.
+    const firstBlank = lines.findIndex((l, i) => i > 0 && l === "");
+    const existingHeaders = firstBlank < 0 ? [] : lines.slice(1, firstBlank);
+    const bodyLines =
+      firstBlank < 0 ? lines.slice(1) : lines.slice(firstBlank + 1);
+
+    const header = `Autocrypt-Prefer-Encrypt: ${preferEncrypt}`;
+    return [begin, header, ...existingHeaders, "", ...bodyLines].join("\n");
+  },
+
+  /**
+   * Decrypt a message that is encrypted to a passphrase (Item 99).
+   *
+   * The other half of Item 95's `encryptWithPassword()`, and the thing Item 95a
+   * measured as possible but not yet wired: librnp hands a symmetric request to
+   * the installed pass provider with a **NULL key handle**, and every existing
+   * callback here dereferences that handle and gives up. This installs a
+   * provider that answers the keyless request and refuses every other one.
+   *
+   * **Refusing the other one is the security-relevant half.** The setup code is
+   * 119 bits the user wrote on paper; a provider that answered *any* request
+   * with it would offer that code as a passphrase for whatever secret key the
+   * message happened to be encrypted to, turning a backup file into a way to
+   * get a key's passphrase tried for it. So a request carrying a key handle
+   * returns false and the ordinary path is untouched.
+   *
+   * The provider is installed only for this call and replaced immediately
+   * afterwards, so nothing else in the application can observe it.
+   *
+   * @param {string} armoured - The ASCII-armored message.
+   * @param {string} passphrase - The setup code.
+   * @param {object} [options] - As `decryptArray()`.
+   * @returns {Promise<object>} `{exitCode, decryptedData}`, as `decrypt()`
+   *   returns.
+   */
+  async decryptWithPassword(armoured, passphrase, options = {}) {
+    if (!passphrase) {
+      throw new Error("a passphrase is required for symmetric decryption");
+    }
+
+    const defaultOptions = {
+      fromAddr: "",
+      maxOutputLength: armoured.length * 100,
+      noOutput: false,
+      uiFlags: 0,
+      verifyOnly: false,
+      msgDate: null,
+      ...options,
+    };
+
+    const arr = armoured.split("").map(c => c.charCodeAt());
+    const data = lazy.ctypes.uint8_t.array()(arr);
+
+    const input = new RNPLib.rnp_input_t();
+    if (RNPLib.rnp_input_from_memory(input.address(), data, arr.length, true)) {
+      throw new Error("rnp_input_from_memory failed");
+    }
+
+    const output = new RNPLib.rnp_output_t();
+    if (RNPLib.rnp_output_to_memory(output.address(), 0)) {
+      RNPLib.rnp_input_destroy(input);
+      throw new Error("rnp_output_to_memory failed");
+    }
+
+    const op = new RNPLib.rnp_op_verify_t();
+    if (RNPLib.rnp_op_verify_create(op.address(), RNPLib.ffi, input, output)) {
+      RNPLib.rnp_input_destroy(input);
+      RNPLib.rnp_output_destroy(output);
+      throw new Error("rnp_op_verify_create failed");
+    }
+
+    const passphraseBytes = lazy.ctypes.char.array()(passphrase);
+    const callback = RNPLib.rnp_password_cb_t(
+      (ffi, appCtx, key, context, buf, bufLen) => {
+        // A key handle means "unlock this secret key", which is not what a
+        // setup code is for. See the comment above.
+        if (!key.isNull()) {
+          return false;
+        }
+        if (bufLen < passphraseBytes.length) {
+          return false;
+        }
+        const dest = lazy.ctypes.cast(
+          buf,
+          lazy.ctypes.char.array(bufLen).ptr
+        ).contents;
+        for (let i = 0; i < passphraseBytes.length; i++) {
+          dest[i] = passphraseBytes[i];
+        }
+        dest[passphraseBytes.length] = 0;
+        return true;
+      },
+      null,
+      false
+    );
+
+    let exitCode;
+    let decryptedData = "";
+    try {
+      RNPLib.rnp_ffi_set_pass_provider(RNPLib.ffi, callback, null);
+      exitCode = RNPLib.rnp_op_verify_execute(op);
+
+      // Read the buffer **before** the handles are destroyed. The output object
+      // owns the memory; reading it afterwards returns an empty string and an
+      // exit code of 0 -- a success that looks like a wrong code, which is how
+      // the first version of this failed.
+      const resultBuf = new lazy.ctypes.uint8_t.ptr();
+      const resultLen = new lazy.ctypes.size_t();
+      if (
+        !RNPLib.rnp_output_memory_get_buf(
+          output,
+          resultBuf.address(),
+          resultLen.address(),
+          false
+        )
+      ) {
+        decryptedData = lazy.ctypes
+          .cast(resultBuf, lazy.ctypes.char.array(resultLen.value).ptr)
+          .contents.readString();
+      }
+    } finally {
+      // Back to the ordinary callbacks whatever happened, so a failure here
+      // cannot leave the application answering every prompt with this code.
+      RNPLib.setDefaultPasswordCB();
+      RNPLib.rnp_op_verify_destroy(op);
+      RNPLib.rnp_input_destroy(input);
+      RNPLib.rnp_output_destroy(output);
+    }
+
+    return { exitCode, decryptedData, ...defaultOptions };
+  },
+
+  /**
+   * Encrypt data to a passphrase, producing an SKESK packet (Item 95).
+   *
+   * RFC 9580 5.3's symmetric-key encrypted session key, and the one operation
+   * that makes a password-carrying message possible at all. Its consumer is
+   * the Autocrypt setup message (D19), but the operation is general: given a
+   * passphrase and some bytes, produce a message only that passphrase opens.
+   *
+   * **The S2K parameters are passed explicitly, not defaulted.** RFC 9580
+   * requires AES-128 or AES-256 for the session key and a salted, iterated
+   * S2K for turning the passphrase into a key. rnp would accept `NULL` for
+   * both and choose for itself; the choice would then be a value nobody in
+   * this project made, and if it were AES-192 the message would be one this
+   * build produced and another implementation refused. So the cipher is
+   * named, the hash is named, and the iteration count is stated as a count
+   * rather than as "whatever rnp thinks".
+   *
+   * The iteration count is the same order as the primary-password floor: the
+   * threat is identical -- an attacker with the ciphertext guessing offline --
+   * so it takes the same reasoning. It is not the same number, because the
+   * setup code is 36 digits of entropy a user has to read out and retype,
+   * which is a different budget from a passphrase they chose.
+   *
+   * @param {string} plaintext - Bytes to encrypt, as a byte string.
+   * @param {string} passphrase - The symmetric passphrase.
+   * @param {object} [options]
+   * @param {"AES128"|"AES256"} [options.cipher="AES256"] - RFC 9580 permits
+   *   these two; anything else is refused rather than passed to rnp, because
+   *   the library would accept more than the specification allows.
+   * @param {string} [options.s2kHash="SHA256"] - Hash for the S2K.
+   * @param {integer} [options.iterations=S2K_ITERATIONS] - Stated explicitly.
+   * @returns {string} The encrypted message, ASCII armored.
+   */
+  encryptWithPassword(plaintext, passphrase, options = {}) {
+    const cipher = options.cipher ?? "AES256";
+    const s2kHash = options.s2kHash ?? "SHA256";
+    const iterations = options.iterations ?? this.S2K_ITERATIONS;
+
+    // RFC 9580 5.3 requires one of these two; refusing here rather than
+    // relying on rnp keeps the conformance rule in one place and testable
+    // without producing a message.
+    if (cipher != "AES128" && cipher != "AES256") {
+      throw new Error(
+        `RFC 9580 permits AES-128 or AES-256 for a symmetric session key, ` +
+          `not ${cipher}`
+      );
+    }
+    if (!passphrase) {
+      throw new Error("a passphrase is required for symmetric encryption");
+    }
+
+    const arr = plaintext.split("").map(e => e.charCodeAt());
+    const data_array = lazy.ctypes.uint8_t.array()(arr);
+    const input = new RNPLib.rnp_input_t();
+    if (
+      RNPLib.rnp_input_from_memory(
+        input.address(),
+        data_array,
+        data_array.length,
+        false
+      )
+    ) {
+      throw new Error("rnp_input_from_memory failed");
+    }
+
+    const output = new RNPLib.rnp_output_t();
+    if (RNPLib.rnp_output_to_memory(output.address(), 0)) {
+      RNPLib.rnp_input_destroy(input);
+      throw new Error("rnp_output_to_memory failed");
+    }
+
+    const op = new RNPLib.rnp_op_encrypt_t();
+    let result = null;
+    try {
+      if (
+        RNPLib.rnp_op_encrypt_create(op.address(), RNPLib.ffi, input, output)
+      ) {
+        throw new Error("rnp_op_encrypt_create failed");
+      }
+      // The S2K cipher argument is the cipher used to wrap the session key,
+      // which is what the specification constrains; the same value is set as
+      // the message cipher so the two cannot disagree.
+      if (
+        RNPLib.rnp_op_encrypt_add_password(
+          op,
+          passphrase,
+          s2kHash,
+          iterations,
+          cipher
+        )
+      ) {
+        throw new Error("rnp_op_encrypt_add_password failed");
+      }
+      if (RNPLib.rnp_op_encrypt_set_cipher(op, cipher)) {
+        throw new Error("rnp_op_encrypt_set_cipher failed");
+      }
+      if (RNPLib.rnp_op_encrypt_set_armor(op, true)) {
+        throw new Error("rnp_op_encrypt_set_armor failed");
+      }
+      if (RNPLib.rnp_op_encrypt_execute(op)) {
+        throw new Error("rnp_op_encrypt_execute failed");
+      }
+
+      const result_buf = new lazy.ctypes.uint8_t.ptr();
+      const result_len = new lazy.ctypes.size_t();
+      if (
+        !RNPLib.rnp_output_memory_get_buf(
+          output,
+          result_buf.address(),
+          result_len.address(),
+          false
+        )
+      ) {
+        const char_array = lazy.ctypes.cast(
+          result_buf,
+          lazy.ctypes.char.array(result_len.value).ptr
+        ).contents;
+        result = char_array.readString();
+      }
+    } finally {
+      RNPLib.rnp_op_encrypt_destroy(op);
+      RNPLib.rnp_input_destroy(input);
+      RNPLib.rnp_output_destroy(output);
+    }
+
+    if (!result) {
+      throw new Error("symmetric encryption produced no output");
+    }
+    return result;
+  },
+
+  /**
+   * S2K iteration count for password encryption, stated rather than defaulted.
+   *
+   * Matches the order the primary-password floor uses, for the same threat: an
+   * attacker holding the ciphertext guessing offline. Not the same figure --
+   * see `encryptWithPassword()`.
+   */
+  S2K_ITERATIONS: 4194304,
 
   /**
    * @param {number} expiryTime - Time to check, in seconds from the epoch.

@@ -49,6 +49,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
 var { GnuPGAgent } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
 );
+var { AutocryptSetup } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/autocryptSetup.sys.mjs"
+);
+var identityKeys = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/identityKeys.sys.mjs"
+);
 var { OpenPgpValidity } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/constants.sys.mjs"
 );
@@ -566,6 +572,134 @@ async function enigCreateKeyMsg() {
   msgCompParam.originalMsgURI = "";
 
   MailServices.compose.OpenComposeWindowWithParams(null, msgCompParam);
+}
+
+/**
+ * Create an Autocrypt setup message (Item 98).
+ *
+ * **User-initiated by construction:** this runs when the menu item is chosen
+ * and at no other time. The specification states that as a MUST, and it is the
+ * property that keeps a message carrying a secret key from being sent by
+ * accident -- so there is no timer, no automatic trigger, and nothing that
+ * calls this on the application's behalf.
+ *
+ * The sequence, and why each step is where it is:
+ *
+ *   1. the user's own key becomes a Transferable Secret Key (Item 96);
+ *   2. a setup code is generated and shown, then required back (Item 97) --
+ *      before anything is encrypted, so a user who does not write it down
+ *      learns that before a message exists;
+ *   3. the message is assembled (Item 98) and handed to a compose window,
+ *      already marked so a receiving client recognises it.
+ *
+ * It leaves the message unsent. Sending is the user's action in the compose
+ * window, which is the same "not silent" requirement seen from the other end.
+ */
+async function createAutocryptSetupMessage() {
+  const identity = MailServices.accounts.defaultAccount?.defaultIdentity;
+  if (!identity?.email) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-no-key")
+    );
+    return;
+  }
+
+  // The user's own key for this identity. `firstUsableKey` is the same rule the
+  // panel and the composer use to name a signer, so "my key" means the same
+  // thing in all three places.
+  const ownKey = identityKeys.firstUsableKey(identity, "sign");
+  if (!ownKey?.secretAvailable) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-no-key")
+    );
+    return;
+  }
+
+  // The preference value comes from account state, as the specification
+  // describes; this build has no per-account control yet, so the conservative
+  // value is used and the absence is recorded in the plan row rather than
+  // guessed at.
+  const preferEncrypt = "nopreference";
+
+  // Step 2 first: a code the user has confirmed they wrote down. Doing this
+  // before the export means a cancelled dialog costs nothing.
+  const codeArgs = {};
+  const outcome = await new Promise(resolve => {
+    window.openDialog(
+      "chrome://openpgp/content/ui/setupCodeDialog.xhtml",
+      "openpgpSetupCodeDialog",
+      "chrome,dialog,modal,centerscreen,resizable",
+      codeArgs
+    );
+    resolve(codeArgs.outcome ?? null);
+  });
+  if (!outcome?.confirmed || !outcome.code) {
+    // Cancelled, or closed without confirming: nothing was created, which is
+    // the correct outcome for a message carrying a secret key.
+    return;
+  }
+
+  let keyBlock;
+  let message;
+  try {
+    keyBlock = lazy.RNP.exportSecretKeyForTransfer(ownKey.fpr, preferEncrypt);
+    if (!keyBlock) {
+      throw new Error("the key could not be exported");
+    }
+    message = AutocryptSetup.buildMessage({
+      address: identity.email,
+      setupCode: outcome.code,
+      keyBlock,
+      preferEncrypt,
+    });
+  } catch (ex) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-setup-message-failed", {
+        reason: ex.message,
+      })
+    );
+    return;
+  }
+
+  // Step 3: a compose window, prefilled and unsent. The body carries the
+  // message's first part -- the text the user reads -- and the setup payload
+  // is attached as the second part's content, so the structure the
+  // specification requires is what actually gets sent.
+  const fields = Cc[
+    "@mozilla.org/messengercompose/composefields;1"
+  ].createInstance(Ci.nsIMsgCompFields);
+  fields.to = identity.email;
+  fields.from = identity.email;
+
+  const attachment = Cc[
+    "@mozilla.org/messengercompose/attachment;1"
+  ].createInstance(Ci.nsIMsgAttachment);
+  const tmpFile = Services.dirsvc.get("TmpD", Ci.nsIFile);
+  tmpFile.append("autocrypt-setup-message.html");
+  tmpFile.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0o600);
+  await IOUtils.writeUTF8(tmpFile.path, message);
+  attachment.url = Services.io.newFileURI(tmpFile).spec;
+  attachment.name = "autocrypt-setup-message.html";
+  attachment.contentType = "application/autocrypt-setup";
+  attachment.temporary = true;
+  fields.addAttachment(attachment);
+
+  const params = Cc[
+    "@mozilla.org/messengercompose/composeparams;1"
+  ].createInstance(Ci.nsIMsgComposeParams);
+  params.composeFields = fields;
+  params.identity = identity;
+  params.type = Ci.nsIMsgCompType.New;
+  params.format = Ci.nsIMsgCompFormat.Default;
+  params.originalMsgURI = "";
+
+  MailServices.compose.OpenComposeWindowWithParams(null, params);
 }
 
 async function enigmailRevokeKey() {

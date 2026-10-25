@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!DOCTYPE html>
+<html
+  xmlns="http://www.w3.org/1999/xhtml"
+  xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  scrolling="false"
+>
+  <head>
+    <title data-l10n-id="openpgp-setup-code-title"></title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src chrome:; script-src chrome: 'unsafe-inline' moz-src:; style-src chrome: 'unsafe-inline'"
+    />
+    <link rel="stylesheet" href="chrome://global/skin/global.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/colors.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/variables.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/themeableDialog.css" />
+
+    <link rel="localization" href="messenger/openpgp/openpgp.ftl" />
+    <script
+      defer="defer"
+      src="chrome://messenger/content/dialogShadowDom.js"
+    ></script>
+    <script
+      defer="defer"
+      src="chrome://openpgp/content/ui/setupCodeDialog.js"
+    ></script>
+  </head>
+  <body>
+    <xul:dialog id="setupCodeDialog" buttons="cancel">
+      <!-- View 1: the code, shown once. The text is set from script because it
+           is generated, and it is deliberately not a textbox: selecting it is
+           fine, editing it would make the stored copy differ from the one the
+           user wrote down. -->
+      <div id="displayView">
+        <p data-l10n-id="openpgp-setup-code-intro"></p>
+        <div id="codeDisplay" class="setup-code" aria-live="polite"></div>
+        <p data-l10n-id="openpgp-setup-code-warning"></p>
+        <xul:hbox pack="end">
+          <xul:button
+            id="writtenDownButton"
+            data-l10n-id="openpgp-setup-code-written-down"
+            oncommand="showReentry()"
+          />
+        </xul:hbox>
+      </div>
+
+      <!-- View 2: re-entry. The code is hidden before this appears, so the user
+           cannot copy it, which is the whole point of asking. -->
+      <div id="reentryView" hidden="hidden">
+        <p data-l10n-id="openpgp-setup-code-reentry-intro"></p>
+        <textbox id="reentryInput" />
+        <p id="reentryError" class="setup-code-error" hidden="hidden" />
+        <xul:hbox pack="end">
+          <xul:button
+            id="reentryConfirmButton"
+            data-l10n-id="openpgp-setup-code-reentry-confirm"
+            oncommand="checkReentry()"
+          />
+        </xul:hbox>
+      </div>
+    </xul:dialog>
+  </body>
+</html>

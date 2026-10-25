@@ -401,6 +401,20 @@
               />
 
               <separator class="thin" />
+
+              <!-- Item 99: the other starting point, beside "I have a key
+                   file", because a user with no key and a setup message in
+                   their mailbox already comes here. Hidden until a message is
+                   actually offered, so it is not a button that explains
+                   itself by failing. -->
+              <button
+                id="importSetupMessageButton"
+                data-l10n-id="openpgp-import-setup-message-button"
+                oncommand="importSetupMessage()"
+                hidden="hidden"
+              />
+
+              <separator class="thin" />
             </html:fieldset>
           </html:div>
         </vbox>

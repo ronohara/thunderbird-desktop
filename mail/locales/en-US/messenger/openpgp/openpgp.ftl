@@ -90,6 +90,42 @@ openpgp-key-id-label =
     .label = Key ID
 
 openpgp-key-man-dialog-title = OpenPGP Key Manager
+
+## Autocrypt setup code (Item 97). The code is generated here, shown once, and
+## never transmitted; the re-entry below is the specification's recommended
+## check that it was actually written down.
+openpgp-setup-code-title = Autocrypt Setup Code
+openpgp-key-man-create-setup-message =
+    .label = Create Autocrypt Setup Message…
+# Shown when a setup message cannot be built, with the reason appended.
+openpgp-setup-message-failed = The setup message could not be created: { $reason }
+openpgp-setup-message-no-key = This identity has no OpenPGP key of its own, so there is nothing to transfer.
+# Shown when a setup message is recognised but its structure is wrong. It is not
+# offered for import, because the code prompt could only fail.
+openpgp-setup-message-malformed = That looks like an Autocrypt setup message, but it is damaged and cannot be imported. The reason given was: { $reason }
+# Shown when the code does not open the message. Different from damaged, because
+# the code authenticates as well as decrypts.
+openpgp-setup-message-wrong-code = That code does not open this message. Check what you wrote down and try again.
+openpgp-setup-code-intro = Write down this code and keep it somewhere safe. You will need it to restore your key on another computer.
+openpgp-setup-code-warning = This code is the only way to open the setup message. If you lose it, the message cannot be read by anyone, including you.
+openpgp-setup-code-written-down =
+    .label = I have written it down
+openpgp-setup-code-reentry-intro = Type the code back to confirm you have it. The dashes do not matter.
+openpgp-setup-code-reentry-confirm =
+    .label = Confirm
+openpgp-setup-code-reentry-mismatch = That is not the code that was shown. Check what you wrote down and try again.
+
+## The Autocrypt setup message itself (Item 98). The first part is what the
+## user reads; the second is the file they carry to another machine.
+autocrypt-setup-subject = Autocrypt Setup Message
+# Variables:
+#   $code (String) - The 36-digit setup code, in nine groups of four.
+autocrypt-setup-body =
+    This message contains your OpenPGP key, protected with the code below. Keep this message: it is how you move your key to another computer.
+
+    Your setup code is: { $code }
+
+    You will be asked for the code when you import the file. If you lose it, the file cannot be opened by anyone, including you.
 ## Per-recipient rules (Item 89). The file named by
 ## mail.openpgp.alias_rules_file is the only store; this dialog edits it.
 openpgp-rules-title = Per-recipient rules

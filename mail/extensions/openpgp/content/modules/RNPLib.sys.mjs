@@ -1586,6 +1586,34 @@ function enableRNPLibJS() {
       rnp_key_handle_t
     ),
 
+    /**
+     * Add a password, which produces an SKESK packet (RFC 9580 5.3).
+     *
+     * The declaration every other member of this family already had, and the
+     * one omission that made a password-encrypted message impossible to
+     * create: without an SKESK there is no symmetric session key, so the
+     * Autocrypt setup message cannot exist. The library exported it all along
+     * -- both shipped libraries define the symbol -- which is what turned
+     * this row from Blocked into work.
+     *
+     * `s2k_hash`, `iterations` and `s2k_cipher` are all passed explicitly by
+     * the caller, never left to rnp's defaults. RFC 9580 requires AES-128 or
+     * AES-256 and a salted, iterated S2K; a default is a value nobody chose
+     * and, in the case of a cipher the specification does not permit, a
+     * conformance defect no other implementation would report until it
+     * refused the message.
+     */
+    rnp_op_encrypt_add_password: librnp.declare(
+      "rnp_op_encrypt_add_password",
+      abi,
+      rnp_result_t,
+      rnp_op_encrypt_t,
+      ctypes.char.ptr,
+      ctypes.char.ptr,
+      ctypes.size_t,
+      ctypes.char.ptr
+    ),
+
     rnp_op_encrypt_add_signature: librnp.declare(
       "rnp_op_encrypt_add_signature",
       abi,

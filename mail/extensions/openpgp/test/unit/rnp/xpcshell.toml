@@ -6,6 +6,10 @@ support-files = [
 ]
 tags = ["openpgp"]
 
+["test_autocryptSetup.js"]
+
+["test_autocryptImport.js"]
+
 ["test_acceptanceExport.js"]
 
 ["test_acceptancePolicy.js"]
@@ -51,6 +55,8 @@ run-sequentially = true  # queries the profile-global keyring and acceptance sto
 # ML-KEM requires the experimental RNP library, which is only
 # distributed in nightly builds.
 ["test_passphraseCacheNote.js"]
+
+["test_passwordEncryption.js"]
 
 ["test_pqcSubkey.js"]
 
@@ -98,9 +104,13 @@ skip-if = ["os != 'linux'"]
 
 ["test_secretKeys.js"]
 
+["test_skeskDecryption.js"]
+
 ["test_signingSubkeyChoice.js"]
 
 ["test_stage10.js"]
+
+["test_setupCode.js"]
 
 ["test_stage11.js"]
 
@@ -113,6 +123,8 @@ skip-if = ["os != 'linux'"]
 ["test_validityVocabulary.js"]
 
 ["test_unlockTracker.js"]
+
+["test_transferableSecretKey.js"]
 
 ["test_userIds.js"]
 

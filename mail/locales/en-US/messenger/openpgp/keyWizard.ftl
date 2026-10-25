@@ -158,6 +158,14 @@ openpgp-import-keep-passphrases =
 
 openpgp-passphrase-prompt-title = Passphrase required
 
+# Item 99: the other starting point, beside "I have a key file". This file is
+# the wizard's own bundle, which is why the label lives here and the alert
+# strings the import reports live in openpgp.ftl -- the wizard's script keeps
+# its own Localization for those, and a label read by the document's bundle
+# must be in the document's bundle.
+openpgp-import-setup-message-button =
+    .label = Import from an Autocrypt Setup Message…
+
 openpgp-import-key-button =
     .label = Select File to Import…
     .accesskey = S
