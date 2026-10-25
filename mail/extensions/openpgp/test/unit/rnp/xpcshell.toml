@@ -118,6 +118,9 @@ skip-if = ["os != 'linux'"]
 
 ["test_stage13Verification.js"]
 
+["test_stage14Verification.js"]
+run-sequentially = true  # writes the profile-global acceptance store and a rules file
+
 ["test_strip.js"]
 
 ["test_uid.js"]

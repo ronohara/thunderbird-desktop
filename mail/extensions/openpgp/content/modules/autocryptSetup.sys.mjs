@@ -106,8 +106,14 @@ export const AutocryptSetup = {
     });
 
     const boundary = EnigmailMime.createBoundary();
+    // The first two digits, and never more. Autocrypt Level 1 forbids the code
+    // in the message's cleartext, and the reason is the one property the code
+    // has: the file alone must not be enough to open the key it carries. The
+    // two digits are permitted -- "to distinguish different messages" -- and
+    // they are useful here because `Passphrase-Begin` sits inside the armour,
+    // where a user cannot read it until they have already entered the code.
     const intro = l10n.formatValueSync("autocrypt-setup-body", {
-      code: canonical,
+      codeBegin: canonical.slice(0, 2),
     });
 
     const lines = [

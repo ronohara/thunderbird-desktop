@@ -118,14 +118,26 @@ openpgp-setup-code-reentry-mismatch = That is not the code that was shown. Check
 ## The Autocrypt setup message itself (Item 98). The first part is what the
 ## user reads; the second is the file they carry to another machine.
 autocrypt-setup-subject = Autocrypt Setup Message
+# The setup code MUST NOT appear in this message. Autocrypt Level 1, "Setup
+# Code": "It MUST NOT be included in the cleartext of the Autocrypt Setup
+# Message, or otherwise transmitted over e-mail." The message is a backup the
+# user is told to keep, so a code printed here would travel with the file it
+# protects and the file alone would open the key.
+#
+# The first two digits may appear, and only there: the specification permits
+# them in the descriptive text "to distinguish different messages", since the
+# Passphrase-Begin header is inside the armour and unreadable until the code has
+# been entered. They are enough to tell one backup from another and twenty
+# bits short of the code.
+#
 # Variables:
-#   $code (String) - The 36-digit setup code, in nine groups of four.
+#   $codeBegin (String) - The first two digits of the setup code.
 autocrypt-setup-body =
-    This message contains your OpenPGP key, protected with the code below. Keep this message: it is how you move your key to another computer.
+    This message contains your OpenPGP key, protected with the setup code that was shown when it was created. Keep this message: it is how you move your key to another computer.
 
-    Your setup code is: { $code }
+    The code is not part of this message, so keep it somewhere else. The code for this message begins with { $codeBegin }.
 
-    You will be asked for the code when you import the file. If you lose it, the file cannot be opened by anyone, including you.
+    You will be asked for the whole code when you import this message. Without it the file cannot be opened by anyone, including you.
 ## Per-recipient rules (Item 89). The file named by
 ## mail.openpgp.alias_rules_file is the only store; this dialog edits it.
 openpgp-rules-title = Per-recipient rules

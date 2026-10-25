@@ -211,9 +211,17 @@ add_task(async function thePartsAreInOrder() {
     parts[1].includes("Content-Type: text/plain"),
     "the first part is plain text, which every client can display"
   );
+  // The second place the previous version asserted the defect, and it is the
+  // same clause as in `theCodeIsNotInTheMessageAndStillOpensIt`: the part is
+  // there to explain the message, not to carry the secret that protects it.
   Assert.ok(
-    parts[1].includes(CODE),
-    "and it carries the code, so the user can read it from the message"
+    !parts[1].includes(CODE),
+    "and it does not carry the setup code, which must never be in the message"
+  );
+  Assert.ok(
+    parts[1].includes(CODE.slice(0, 2)),
+    "it names only the first two digits, which the specification permits so " +
+      "that messages can be told apart"
   );
   Assert.ok(
     parts[2].includes("Content-Type: application/autocrypt-setup"),
@@ -432,32 +440,75 @@ add_task(async function theBuilderRefusesWhatItCannotBuild() {
 });
 
 /**
- * The code in the message and the code the user was shown are the same code.
+ * The code is *not* in the message, and the code the user was shown still opens
+ * it.
  *
- * Trivial-looking and worth having: the message's human part states the code,
- * and a mismatch between the text and what the armour is encrypted with would
- * produce a message that looks right and cannot be opened.
+ * Both halves matter and each guards a different defect.
+ *
+ * **Absence.** Autocrypt Level 1, "Setup Code": *"It MUST NOT be included in
+ * the cleartext of the Autocrypt Setup Message, or otherwise transmitted over
+ * e-mail."* The message is a backup the user is told to keep, so a code printed
+ * in it would travel with the file it protects, and the file alone would open
+ * the key.
+ *
+ * **And the two digits that are allowed.** The specification permits the first
+ * two digits in the descriptive text "to distinguish different messages", which
+ * is the only way a user can tell two backups apart before entering a code --
+ * `Passphrase-Begin` sits inside the armour, unreadable until then.
+ *
+ * **The decrypt half is the reason this test existed, and it is kept.** A
+ * mismatch between what the user was shown and what the armour is encrypted
+ * with would produce a message that looks right and cannot be opened. The
+ * previous version of this test read the code out of the body and asserted it
+ * matched, which took a prohibited sentence as its premise and would have failed
+ * on the day the message was corrected. The assertion is now written from the
+ * specification, and the decrypt uses the code the caller supplied -- which is
+ * what the user would have written down.
  */
-add_task(async function theStatedCodeIsTheEncryptingCode() {
+add_task(async function theCodeIsNotInTheMessageAndStillOpensIt() {
+  const message = await buildMessage();
+  const canonical = SetupCode.format(CODE);
+
+  info(
+    `FINDING code in message: ${
+      message.includes(canonical) ? "present" : "absent"
+    }; leading digits: ${
+      message.includes(canonical.slice(0, 2)) ? "present" : "absent"
+    }`
+  );
+
+  Assert.ok(
+    !message.includes(canonical),
+    "the dashed code does not appear in the message (Autocrypt Level 1, " +
+      "Setup Code, MUST NOT)"
+  );
+  Assert.ok(
+    !message.includes(canonical.replace(/-/g, "")),
+    "nor do the thirty-six digits without their dashes"
+  );
+  Assert.ok(
+    message.includes(canonical.slice(0, 2)),
+    "the first two digits do appear, which the specification permits so that " +
+      "messages can be told apart"
+  );
+
   if (!gpgPath) {
-    info("SKIPPED: no gpg executable.");
+    info("SKIPPED: the decrypt half needs gpg.");
     Assert.ok(true, "skipped");
     return;
   }
 
-  const message = await buildMessage();
-  const stated = SetupCode.format(
-    message.split("Your setup code is: ")[1].split(/\s/)[0]
-  );
-  Assert.equal(stated, CODE, "the message states the code that encrypts it");
-
   const path = PathUtils.join(tempDir.path, "stated.asc");
   await IOUtils.writeUTF8(path, armourOf(message));
-  const { exitCode } = await runGpg([
+  const { exitCode, stderr } = await runGpg([
     "--passphrase",
-    stated,
+    canonical,
     "--decrypt",
     path,
   ]);
-  Assert.equal(exitCode, 0, "and that code opens it");
+  Assert.equal(
+    exitCode,
+    0,
+    `the code the user was shown opens the armour: ${stderr.trim()}`
+  );
 });
