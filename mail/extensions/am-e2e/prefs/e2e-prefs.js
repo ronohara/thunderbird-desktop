@@ -301,9 +301,18 @@ pref("mail.identity.default.e2etechpref", 0);
 // so the floor can be raised without patching NSS; MailGlue exports it at
 // app-startup, which is the last moment before NSS is initialised.
 //
-// 0 leaves NSS's own minimum in place. The shipped value is decided separately
-// (design 12.1, plan Item 74) so that the number lives in one place rather
-// than two that can disagree. Changing it re-encrypts an existing database
-// once, at the next unlock; attributes not yet re-encrypted stay readable at
-// their old count, so there is no all-or-nothing state.
-pref("mail.e2ee.primary_password_min_iteration_count", 0);
+// 0 leaves NSS's own minimum in place. The shipped value is set by Item 74;
+// it lives here and nowhere else, so the test that proves it reads this pref
+// rather than carrying a copy.
+//
+// 4,100,000 is D8's figure: 1.2x the GnuPG keyring's measured 428 ms per guess
+// on this machine (Item 51), converted through NSS's own PBKDF2-HMAC-SHA256
+// rate. The derivation is in design 12.1, including the correction that moved
+// it from 1,010,000: that number was a match for 250 ms, and GnuPG measured
+// 428 ms, not 250.
+//
+// Changing it re-encrypts an existing database once, at the next unlock;
+// attributes not yet re-encrypted stay readable at their old count, so there is
+// no all-or-nothing state. The cost is paid per attribute on reads, which is
+// why the figure is 1.2x rather than much higher (design 12.2).
+pref("mail.e2ee.primary_password_min_iteration_count", 4100000);

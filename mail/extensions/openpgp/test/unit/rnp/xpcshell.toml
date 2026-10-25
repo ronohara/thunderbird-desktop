@@ -48,6 +48,8 @@ run-if = ["nightly_build"]
 
 ["test_importGuard.js"]
 
+["test_iterationFloorValue.js"]
+
 ["test_importPackets.js"]
 
 ["test_keySelectionDelegation.js"]

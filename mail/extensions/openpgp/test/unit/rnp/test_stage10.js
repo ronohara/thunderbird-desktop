@@ -58,10 +58,19 @@ const { TIERS, failingRules, estimateScore, resolveTier } =
     "resource://gre/modules/PrimaryPasswordPolicy.sys.mjs"
   );
 
-/** D8's target: 1.2x the GnuPG keyring's measured 300 ms per guess. */
-const TARGET_ITERATIONS = 1010000;
-/** What the design measured on the build machine for one GnuPG guess. */
-const GNU_PG_MS = 300;
+/**
+ * The shipped floor, read from the preference rather than copied.
+ *
+ * Item 74 sets that number; a constant here would be a second copy, and the
+ * two would disagree the first time the figure moved. It moved once already:
+ * this file said 1,010,000, which was derived from a 250 ms GnuPG measurement
+ * that was later corrected to 428 ms.
+ */
+const TARGET_ITERATIONS = Services.prefs.getIntPref(
+  "mail.e2ee.primary_password_min_iteration_count"
+);
+/** GnuPG's measured cost per guess on this machine (Item 51). */
+const GNU_PG_MS = 428;
 
 /** The name the floor is exported under; softoken reads it per operation. */
 const ENV_VAR = "NSS_MIN_MP_PBE_ITERATION_COUNT";
@@ -365,21 +374,30 @@ add_task(async function row2_theCostIsWhatWasClaimed() {
     `derivations at ${TARGET_ITERATIONS}: ${samples.join(", ")} ms; mean ${mean.toFixed(0)} ms`
   );
 
-  // D8 asks for 1.2x the 300 ms GnuPG measurement, which is 360 ms. The band
-  // is wide because this is a wall-clock measurement on an unknown machine:
-  // 0.4x to 3x the target separates "the floor is in force" from "the floor
-  // was never applied", and 1,010,000 iterations of PBKDF2-HMAC-SHA256 cannot
-  // plausibly land outside it.
+  // D8 asks for 1.2x GnuPG's measured cost, which is 514 ms. The band is wide
+  // because this is wall-clock on a machine whose governor is powersave: 0.4x
+  // to 3x separates "the floor is in force" from "the floor was never applied",
+  // and four million iterations of PBKDF2-HMAC-SHA256 cannot plausibly land
+  // outside it.
   const targetMs = GNU_PG_MS * 1.2;
   Assert.greater(
     mean,
     targetMs * 0.4,
     `the derivation must cost about what D8 targets (${targetMs} ms), measured ${mean.toFixed(0)} ms`
   );
+  // Not the same quantity as the target above, and the band has to admit it.
+  // `mean` times a *change*: derive with the old password, derive with the new,
+  // then re-encrypt the database. The target is one derivation -- what an
+  // attacker pays per guess. So the expectation is a small multiple, not
+  // equality, and at 4,100,000 iterations an upper bound of 3x was cleared by
+  // six milliseconds before Item 74 raised the floor. The bound's job is to
+  // separate "the floor is in force" from "an order of magnitude out", which
+  // the lower bound already does; widening it here does not weaken that.
   Assert.less(
     mean,
-    targetMs * 3,
-    `and not several times it, measured ${mean.toFixed(0)} ms`
+    targetMs * 6,
+    `and within a small multiple of it, measured ${mean.toFixed(0)} ms ` +
+      `against a ${targetMs} ms per-guess target`
   );
 
   info(
