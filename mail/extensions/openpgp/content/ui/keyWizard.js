@@ -1174,8 +1174,10 @@ async function appendImportedKeys(resultKeys) {
 
     if (key && key.fpr) {
       // If the checkbox was checked, update the acceptance of the key.
+      // Awaited: this function is already async, and the marker it writes is
+      // what makes the imported key usable.
       if (document.getElementById(`${key.keyId}-set-personal`).checked) {
-        PgpSqliteDb2.acceptAsPersonalKey(key.fpr);
+        await PgpSqliteDb2.acceptAsPersonalKey(key.fpr);
       }
 
       const container = document.createXULElement("hbox");

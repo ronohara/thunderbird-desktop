@@ -8,6 +8,9 @@ tags = ["openpgp"]
 
 ["test_acceptanceExport.js"]
 
+["test_acceptanceStorage.js"]
+run-sequentially = true  # writes the profile-global acceptance store
+
 ["test_addSubkey.js"]
 
 ["test_alias.js"]
@@ -87,9 +90,13 @@ skip-if = ["os != 'linux'"]
 
 ["test_stage10.js"]
 
+["test_stage11.js"]
+
 ["test_strip.js"]
 
 ["test_uid.js"]
+
+["test_validityVocabulary.js"]
 
 ["test_unlockTracker.js"]
 

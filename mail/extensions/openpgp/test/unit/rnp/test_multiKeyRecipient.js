@@ -38,10 +38,17 @@ const OTHER_ADDR = "nobody@example.com";
 // Acceptance values as the code under test receives them: 3 personal,
 // 2 verified, 1 unverified, 0 undecided, -1 rejected.
 const PERSONAL = 3;
-const VERIFIED = 2;
-const UNVERIFIED = 1;
-const UNDECIDED = 0;
-const REJECTED = -1;
+// The GnuPG validity values, not the old Thunderbird numbers. These stubbed the
+// real function's return, so they have to speak the vocabulary it now returns --
+// with the old numbers, VERIFIED = 2 is NEVER and a "verified" key would be
+// refused.
+const { OpenPgpValidity } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/constants.sys.mjs"
+);
+const VERIFIED = OpenPgpValidity.FULL;
+const UNVERIFIED = OpenPgpValidity.UNDEFINED;
+const UNDECIDED = OpenPgpValidity.UNKNOWN;
+const REJECTED = OpenPgpValidity.NEVER;
 
 let gOriginalCandidates;
 let gOriginalIsValid;

@@ -6,11 +6,20 @@
  * Carrying the user's acceptance judgments between profiles.
  *
  * The judgments -- which keys are trusted, verified, rejected, personal --
- * live in the profile's own SQLite store, in `acceptance_decision` and
- * `acceptance_email`. GnuPG exports its equivalent (`--export-ownertrust`) and
- * this store had no equivalent, so a lost profile or a moved machine lost every
- * judgment the user had made about which keys to trust, and the only way to
- * get them back was to repeat the work by hand, key by key.
+ * live in the profile's own SQLite store, in `acceptance_decision`,
+ * `acceptance_email` and `personal_key`. GnuPG exports its equivalent
+ * (`--export-ownertrust`) and this store had no equivalent, so a lost profile
+ * or a moved machine lost every judgment the user had made about which keys to
+ * trust, and the only way to get them back was to repeat the work by hand, key
+ * by key.
+ *
+ * Two facts travel here, and they are not the same fact: **this key is mine**
+ * (the marker, `personal_key`) and **this is what I think of it for these
+ * addresses** (the judgment, `acceptance_decision` + `acceptance_email`). An
+ * entry carries `personal` for the first and `decision`/`emails` for the
+ * second. `decision: "personal"` is still written and still read, because it
+ * was the only way the marker could be expressed before the two were split
+ * apart, and a file already exported must not become unimportable.
  *
  * Two things this is not. It is not a backup of the keys: keys travel in the
  * keyring, and this file is meaningless without them, though an entry for a key
@@ -40,8 +49,18 @@ export const FORMAT_KIND = "thunderbird-openpgp-acceptance";
  * The decisions the store can hold. `undecided` is deliberately absent: it is
  * not a stored value, it is the absence of a row, so a file that names it is
  * describing something the store has no way to represent.
+ *
+ * `personal` is a decision word only for compatibility. It names the marker,
+ * not a judgment about an address, and the import routes it to the marker.
  */
 export const DECISIONS = ["personal", "verified", "unverified", "rejected"];
+
+/**
+ * The decision words that say something about a key's addresses. `personal` is
+ * excluded: a key can be the user's own without any address being judged, and
+ * a judgment can exist for a key that is not the user's own.
+ */
+const ADDRESS_DECISIONS = new Set(["verified", "unverified", "rejected"]);
 
 /**
  * Fingerprint lengths in hex digits. A v4 fingerprint is 40; librnp's
@@ -66,8 +85,14 @@ function isValidFingerprint(value) {
 /**
  * Reads every acceptance judgment in the store.
  *
- * @returns {Promise<object[]>} `[{fpr, decision, emails}]`, ordered by
- *   fingerprint so an exported file is stable and a diff between two exports
+ * Both facts are read: the address judgments from `acceptance_decision` and
+ * `acceptance_email`, and the personal markers from `personal_key`. A key that
+ * is the user's own and has no address judgment is exported as
+ * `decision: "personal"` with `personal: true` -- the word files already carry
+ * -- so moving a profile does not quietly lose it.
+ *
+ * @returns {Promise<object[]>} `[{fpr, decision, emails, personal}]`, ordered
+ *   by fingerprint so an exported file is stable and a diff between two exports
  *   shows what actually changed.
  */
 export async function readAcceptance() {
@@ -79,6 +104,9 @@ export async function readAcceptance() {
     const emails = await conn.execute(
       "select fpr, email from acceptance_email order by fpr, email"
     );
+    const personal = await conn.execute(
+      "select fpr from personal_key order by fpr"
+    );
 
     const byFpr = new Map();
     for (const row of decisions) {
@@ -86,6 +114,7 @@ export async function readAcceptance() {
         fpr: row.getResultByName("fpr"),
         decision: row.getResultByName("decision"),
         emails: [],
+        personal: false,
       });
     }
     for (const row of emails) {
@@ -98,7 +127,21 @@ export async function readAcceptance() {
       // decision -- so it is dropped rather than exported as though it meant
       // something.
     }
-    return [...byFpr.values()];
+    for (const row of personal) {
+      const fpr = row.getResultByName("fpr");
+      const entry = byFpr.get(fpr);
+      if (entry) {
+        entry.personal = true;
+      } else {
+        byFpr.set(fpr, {
+          fpr,
+          decision: "personal",
+          emails: [],
+          personal: true,
+        });
+      }
+    }
+    return [...byFpr.values()].sort((a, b) => (a.fpr < b.fpr ? -1 : 1));
   } finally {
     await conn.close();
   }
@@ -178,7 +221,14 @@ export function validateExport(data) {
           .filter(e => typeof e == "string" && e.includes("@"))
           .map(e => e.toLowerCase())
       : [];
-    entries.push({ fpr, decision: item.decision, emails });
+    entries.push({
+      fpr,
+      decision: item.decision,
+      emails,
+      // Absent in files written before the marker had its own field; such an
+      // entry expresses the marker through `decision` instead.
+      personal: item.personal === true,
+    });
   }
   return { entries, skipped, error: null };
 }
@@ -241,7 +291,39 @@ export async function importAcceptance(data, options = {}) {
   for (const entry of entries) {
     const local = existing.get(entry.fpr);
 
-    if (local && local.decision == entry.decision) {
+    // The marker first, and independently of the judgment below.
+    //
+    // "This key is mine" and "this is what I think of it for this address" are
+    // separate facts, so an entry may carry either, or both, and neither may
+    // stand in for the other. The marker is never removed by an import: a file
+    // that does not mention it says nothing about it.
+    if (entry.personal || entry.decision == "personal") {
+      if (local?.personal) {
+        result.kept++;
+      } else {
+        try {
+          await ring.acceptAsPersonalKey(entry.fpr);
+          result.added++;
+        } catch (ex) {
+          result.errors.push(`${entry.fpr}: ${ex.message}`);
+        }
+      }
+    }
+
+    if (entry.decision == "personal") {
+      // A marker and nothing else, which is what every `personal` entry meant
+      // before the two facts had separate homes.
+      continue;
+    }
+
+    // Only a real judgment conflicts with a real judgment. A local marker used
+    // to sit in the same column, so comparing against it here would report a
+    // false conflict between "this key is mine" and "I verified it".
+    const localDecision = ADDRESS_DECISIONS.has(local?.decision)
+      ? local.decision
+      : null;
+
+    if (localDecision && localDecision == entry.decision) {
       // Same decision, possibly different addresses. Merging the addresses is
       // the one thing an identical decision still has to do, because the
       // address list is what decides whether the key is usable for a sender.
@@ -261,7 +343,7 @@ export async function importAcceptance(data, options = {}) {
       continue;
     }
 
-    if (local) {
+    if (localDecision) {
       result.conflicts++;
       if (onConflict == "keep-local") {
         result.kept++;
@@ -279,7 +361,7 @@ export async function importAcceptance(data, options = {}) {
         entry.decision == "rejected" ? null : entry.emails,
         entry.decision
       );
-      if (local) {
+      if (localDecision) {
         result.replaced++;
       } else {
         result.added++;

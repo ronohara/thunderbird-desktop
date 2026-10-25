@@ -219,6 +219,10 @@ export var PgpSqliteDb2 = {
       delObj
     );
     await conn.execute("delete from acceptance_email where fpr = :fpr", delObj);
+    // Deliberately not `personal_key`. This helper is shared with
+    // `updateAcceptance()`, which replaces a fingerprint's *judgment* and must
+    // leave the marker alone -- a key stays the user's own however often its
+    // addresses are judged. The wholesale delete adds the marker itself.
   },
 
   /**
@@ -236,6 +240,12 @@ export var PgpSqliteDb2 = {
       conn = await this.openDatabase();
       await conn.execute("begin transaction");
       await this._deleteAcceptanceNoTransaction(conn, fingerprint);
+      // Everything the store knows about the fingerprint, which is what a
+      // caller deleting a key means. Clearing only the marker has its own
+      // method, `deletePersonalKeyAcceptance()`.
+      await conn.execute("delete from personal_key where fpr = :fpr", {
+        fpr: fingerprint,
+      });
       await conn.execute("commit transaction");
       await conn.close();
       Services.obs.notifyObservers(null, "openpgp-acceptance-change");
@@ -342,6 +352,21 @@ export var PgpSqliteDb2 = {
 
   async updateAcceptance(fingerprint, emailArray, decision) {
     fingerprint = fingerprint.toLowerCase();
+
+    if (decision == "personal") {
+      // "Personal" is not a judgment about an address, so it is routed to the
+      // marker rather than stored here.
+      //
+      // This is how every caller marked a key as its own before the marker had
+      // its own table -- the shared test helper's `importPrivateKey()` still
+      // defaults to it -- and ignoring the word here would leave those keys
+      // unmarked while reporting success. The address list is not used: a
+      // marker says nothing about which addresses a key is judged for, and
+      // writing it must not replace a judgment the user already made.
+      await this.acceptAsPersonalKey(fingerprint);
+      return;
+    }
+
     let conn;
     try {
       const uniqueEmails = new Set();
@@ -406,17 +431,105 @@ export var PgpSqliteDb2 = {
     }
   },
 
+  /**
+   * Mark a key as the user's own.
+   *
+   * The promise is returned, not merely awaited inside: without that, an
+   * `await` on this call resolved before the write had begun, so a caller saw
+   * a success for a write that had not happened and would never report its
+   * failure. `RNP.genKey()` awaits this, and a key whose marker did not commit
+   * can never be used for encryption.
+   *
+   * The marker lives in its own table. It used to be a `decision` value, in the
+   * one row per fingerprint that also holds the trust judgment for a key's
+   * addresses -- so accepting a key for an address deleted that row and wrote
+   * `verified` in its place, and the key stopped being the user's own. Two
+   * facts, one row; now two tables, and the collision cannot happen.
+   *
+   * @param {string} fingerprint
+   * @returns {Promise<void>} Resolves once the write has committed.
+   */
   async acceptAsPersonalKey(fingerprint) {
-    this.updateAcceptance(fingerprint, null, "personal");
+    fingerprint = fingerprint.toLowerCase();
+    let conn;
+    try {
+      conn = await this.openDatabase();
+      await conn.execute("insert or ignore into personal_key values (:fpr)", {
+        fpr: fingerprint,
+      });
+      await conn.close();
+      Services.obs.notifyObservers(null, "openpgp-acceptance-change");
+    } catch (ex) {
+      if (conn) {
+        await conn.close();
+      }
+      throw ex;
+    }
   },
 
+  /**
+   * Drop the marker that says a key is the user's own.
+   *
+   * Only the marker. This used to call `deleteAcceptance()`, which also removed
+   * the trust judgment and its addresses -- so unticking "personal" silently
+   * discarded a judgment the user had made about that key's user IDs.
+   *
+   * @param {string} fingerprint
+   * @returns {Promise<void>} Resolves once the delete has committed.
+   */
   async deletePersonalKeyAcceptance(fingerprint) {
-    this.deleteAcceptance(fingerprint);
+    fingerprint = fingerprint.toLowerCase();
+    let conn;
+    try {
+      conn = await this.openDatabase();
+      await conn.execute("delete from personal_key where fpr = :fpr", {
+        fpr: fingerprint,
+      });
+      await conn.close();
+      Services.obs.notifyObservers(null, "openpgp-acceptance-change");
+    } catch (ex) {
+      if (conn) {
+        await conn.close();
+      }
+      throw ex;
+    }
   },
 
+  /**
+   * Whether the user has marked this key as their own.
+   *
+   * A rejection outranks the marker. Rejecting a key means never encrypt to
+   * it, and that decision is global for the fingerprint; a key can be both the
+   * user's own and rejected, and in that state it is not usable. Checking here
+   * rather than at the eight call sites is what keeps them all correct, and it
+   * restores an invariant the old one-row schema could not hold: rejecting a
+   * key used to be silently undone by marking it personal.
+   *
+   * @param {string} fingerprint
+   * @returns {Promise<boolean>}
+   */
   async isAcceptedAsPersonalKey(fingerprint) {
-    const result = await this.getFingerprintAcceptance(null, fingerprint);
-    return result === "personal";
+    fingerprint = fingerprint.toLowerCase();
+    const decision = await this.getFingerprintAcceptance(null, fingerprint);
+    if (decision == "rejected") {
+      return false;
+    }
+    let conn;
+    try {
+      conn = await this.openDatabase();
+      const rows = await conn.execute(
+        "select count(*) as hits from personal_key where fpr = :fpr",
+        { fpr: fingerprint }
+      );
+      const hits = rows.length ? rows[0].getResultByName("hits") : 0;
+      await conn.close();
+      return hits > 0;
+    } catch (ex) {
+      if (conn) {
+        await conn.close();
+      }
+      throw ex;
+    }
   },
 };
 
@@ -461,6 +574,50 @@ async function checkAcceptanceTable(connection) {
   if (!exists || !exists2) {
     await createAcceptanceTable(connection);
   }
+  await ensurePersonalKeyTable(connection);
+}
+
+/**
+ * Adds `personal_key` to a profile that predates it, and moves the markers
+ * that used to be stored as a decision.
+ *
+ * The move is a copy then a delete, in one transaction: until the new table
+ * exists a `personal` decision is how a key was marked as the user's own, and
+ * afterwards that word in `acceptance_decision` means nothing. Running it
+ * twice is harmless -- the insert is `or ignore`, and the second run finds no
+ * `personal` rows to move.
+ *
+ * @param {OpenedConnection} connection
+ */
+async function ensurePersonalKeyTable(connection) {
+  if (await connection.tableExists("personal_key")) {
+    return;
+  }
+  await createPersonalKeyTable(connection);
+  await connection.execute("begin transaction");
+  try {
+    await connection.execute(
+      "insert or ignore into personal_key (fpr)" +
+        " select fpr from acceptance_decision where decision = 'personal'"
+    );
+    await connection.execute(
+      "delete from acceptance_decision where decision = 'personal'"
+    );
+    await connection.execute("commit transaction");
+  } catch (ex) {
+    await connection.execute("rollback transaction");
+    throw ex;
+  }
+}
+
+/** @param {OpenedConnection} connection */
+async function createPersonalKeyTable(connection) {
+  await connection.execute(
+    "create table personal_key (fpr text not null, unique(fpr));"
+  );
+  await connection.execute(
+    "create unique index personal_key_i1 on personal_key(fpr);"
+  );
 }
 
 /** @param {OpenedConnection} connection */
@@ -486,4 +643,6 @@ async function createAcceptanceTable(connection) {
   await connection.execute(
     "create unique index acceptance__decision_i1 on acceptance_decision(fpr);"
   );
+
+  await createPersonalKeyTable(connection);
 }

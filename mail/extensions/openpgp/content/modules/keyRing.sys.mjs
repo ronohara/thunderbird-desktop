@@ -5,6 +5,12 @@
  */
 
 import { MailStringUtils } from "resource:///modules/MailStringUtils.sys.mjs";
+// The constants *namespace*, imported directly rather than through the
+// `defineESModuleGetters` block below: as a lazy getter this resolved to
+// undefined and every validity comparison threw. Fifth occurrence of that
+// failure in this tree, and the reachability assertion in
+// test_validityVocabulary.js is what caught it.
+import * as OpenPgpConstants from "chrome://openpgp/content/modules/constants.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -1620,7 +1626,7 @@ export var EnigmailKeyRing = {
    */
   async isValidKeyForRecipient(keyObj, emailAddr, allowExpired) {
     if (!emailAddr) {
-      return -2;
+      return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
     const level = this._getValidityLevelIgnoringAcceptance(
       keyObj,
@@ -1647,11 +1653,11 @@ export var EnigmailKeyRing = {
    */
   _getValidityLevelIgnoringAcceptance(keyObj, emailAddr, allowExpired) {
     if (keyObj.keyTrust == "r") {
-      return -2;
+      return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
 
     if (keyObj.keyTrust == "e" && !allowExpired) {
-      return -2;
+      return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
 
     if (emailAddr) {
@@ -1670,13 +1676,13 @@ export var EnigmailKeyRing = {
         }
       }
       if (!uidMatch) {
-        return -2;
+        return OpenPgpConstants.OpenPgpValidity.INVALID;
       }
     }
 
     // key valid for encryption?
     if (!keyObj.keyUseFor.includes("E")) {
-      return -2;
+      return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
 
     // Ensure we have at least one key usable for encryption
@@ -1700,7 +1706,7 @@ export var EnigmailKeyRing = {
     }
 
     if (!foundGoodEnc) {
-      return -2;
+      return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
 
     return 0; // no problem found
@@ -1713,9 +1719,12 @@ export var EnigmailKeyRing = {
         keyObj.fpr
       );
       if (isPersonal) {
-        acceptanceLevel = 3;
+        acceptanceLevel = OpenPgpConstants.OpenPgpValidity.ULTIMATE;
       } else {
-        acceptanceLevel = -1; // rejected
+        // A private key that is not accepted as personal is refused. Expressed
+        // as NEVER rather than as a negative, because this is a trust decision
+        // and belongs in the same vocabulary as the rest.
+        acceptanceLevel = OpenPgpConstants.OpenPgpValidity.NEVER;
       }
     } else {
       acceptanceLevel = await this.getKeyAcceptanceLevelForEmail(
@@ -1771,9 +1780,18 @@ export var EnigmailKeyRing = {
         false
       );
 
-      // Below "unverified" the key is not usable for this address: rejected
-      // and undecided stay excluded, as they were before the ranking went.
-      if (acceptanceLevel < 1) {
+      // An explicit test of the acceptable values, not a threshold.
+      //
+      // This used to read `if (acceptanceLevel < 1)`, which worked only because
+      // rejection was -1 and everything else counted upward. In GnuPG's
+      // vocabulary NEVER is 2 and UNDEFINED is 1, so the same comparison would
+      // admit a rejected key -- the ordering temptation is exactly what Item 77
+      // warns about.
+      //
+      // `INVALID` is negative and distinct from the six values: it means the key
+      // is unusable for the address (revoked, expired, no encryption subkey, no
+      // matching user ID), which is not a trust judgment at all.
+      if (!OpenPgpConstants.isValidityUsable(acceptanceLevel)) {
         continue;
       }
       if (seen.has(keyObj.keyId)) {
@@ -1811,17 +1829,29 @@ export var EnigmailKeyRing = {
     return keys.length ? keys[0] : null;
   },
 
+  /**
+   * The decision word for a validity value.
+   *
+   * The strings are what get stored, and they are unchanged by Item 77: the
+   * user's judgment is "verified" or "rejected", not a number, and the numbers
+   * are GnuPG's vocabulary laid underneath. So this is the only place the two
+   * meet, and existing profile data needs no migration for the vocabulary
+   * change.
+   *
+   * @param {integer} level - One of `OpenPgpValidity`.
+   * @returns {string} The stored decision word.
+   */
   getAcceptanceStringFromAcceptanceLevel(level) {
     switch (level) {
-      case 3:
+      case OpenPgpConstants.OpenPgpValidity.ULTIMATE:
         return "personal";
-      case 2:
+      case OpenPgpConstants.OpenPgpValidity.FULL:
         return "verified";
-      case 1:
+      case OpenPgpConstants.OpenPgpValidity.UNDEFINED:
         return "unverified";
-      case -1:
+      case OpenPgpConstants.OpenPgpValidity.NEVER:
         return "rejected";
-      case 0:
+      case OpenPgpConstants.OpenPgpValidity.UNKNOWN:
       default:
         return "undecided";
     }
@@ -1834,7 +1864,7 @@ export var EnigmailKeyRing = {
       );
     }
 
-    let acceptanceLevel = 0;
+    let acceptanceLevel = OpenPgpConstants.OpenPgpValidity.UNKNOWN;
 
     const acceptanceResult = {};
     try {
@@ -1850,20 +1880,20 @@ export var EnigmailKeyRing = {
 
     if (acceptanceResult.fingerprintAcceptance == "rejected") {
       // rejecting is always global for all email addresses
-      return -1;
+      return OpenPgpConstants.OpenPgpValidity.NEVER;
     }
 
     if (acceptanceResult.emailDecided) {
       switch (acceptanceResult.fingerprintAcceptance) {
         case "verified":
-          acceptanceLevel = 2;
+          acceptanceLevel = OpenPgpConstants.OpenPgpValidity.FULL;
           break;
         case "unverified":
-          acceptanceLevel = 1;
+          acceptanceLevel = OpenPgpConstants.OpenPgpValidity.UNDEFINED;
           break;
         default:
         case "undecided":
-          acceptanceLevel = 0;
+          acceptanceLevel = OpenPgpConstants.OpenPgpValidity.UNKNOWN;
           break;
       }
     }
@@ -2027,7 +2057,11 @@ export var EnigmailKeyRing = {
         emailAddr,
         allowExpired
       );
-      if (acceptanceLevel < -1) {
+      // Only the hard-invalid sentinel is excluded here, and deliberately: this
+      // list is what the UI shows, so a rejected key is still listed -- it is
+      // refused at the point of use by `isValidityUsable()`, not hidden from the
+      // reader. `INVALID` is negative; no validity value is.
+      if (acceptanceLevel === OpenPgpConstants.OpenPgpValidity.INVALID) {
         continue;
       }
       if (!keyObj.secretAvailable) {
@@ -2416,15 +2450,23 @@ export var EnigmailKeyRing = {
           keyObj,
           email
         );
+        // Named values, not raw numbers. This switch used to read `case 1: case
+        // 2:` for accepted and `case -1:` for rejected -- which under GnuPG's
+        // numbering would make NEVER (2) "accepted" and leave rejection
+        // unreachable. The readiness vocabulary is derived from these values
+        // rather than stored, which is why changing the values without this
+        // change produced a rejected key shown as accepted; the failure was
+        // Item 67's test noticing, not a silent one.
+        const { OpenPgpValidity } = OpenPgpConstants;
         switch (acceptanceLevel) {
-          case 1:
-          case 2:
+          case OpenPgpValidity.UNDEFINED:
+          case OpenPgpValidity.FULL:
             keyMeta.readiness = isExpired ? "expiredAccepted" : "accepted";
             break;
-          case -1:
+          case OpenPgpValidity.NEVER:
             keyMeta.readiness = isExpired ? "expiredRejected" : "rejected";
             break;
-          case 0:
+          case OpenPgpValidity.UNKNOWN:
           default: {
             const other = await lazy.PgpSqliteDb2.getFingerprintAcceptance(
               null,

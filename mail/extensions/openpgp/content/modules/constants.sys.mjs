@@ -4,6 +4,60 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+/**
+ * GnuPG's six validity values, in GnuPG's own numbering.
+ *
+ * Item 77 / D13: one vocabulary shared by two engines, rather than
+ * Thunderbird's five private values. The mapping is
+ * personal->ULTIMATE, verified->FULL, unverified->UNDEFINED,
+ * undecided->UNKNOWN, rejected->NEVER, with MARGINAL left over -- only GnuPG's
+ * own computation produces it, and it arrives here when the external engine
+ * reports it.
+ *
+ * **These are not ordered by trustworthiness and must never be compared as a
+ * threshold.** NEVER is 2, above UNDEFINED's 1, so `level >= UNDEFINED` admits a
+ * rejected key. Every use is an explicit test of specific values; if a
+ * comparison with `<` or `>` appears against one of these, it is a bug. The
+ * ordering that temptation comes from belonged to the old vocabulary, where
+ * rejection was -1 and everything else counted upward.
+ */
+export var OpenPgpValidity = {
+  UNKNOWN: 0,
+  UNDEFINED: 1,
+  NEVER: 2,
+  MARGINAL: 3,
+  FULL: 4,
+  ULTIMATE: 5,
+
+  /**
+   * Not a validity value. Returned by `isValidKeyForRecipient()` when the key
+   * cannot be used for the address for a reason that is not about trust at all:
+   * revoked, expired, no encryption subkey, no matching user ID. Kept separate
+   * from the six because conflating "untrusted" with "unusable" is what made
+   * the old sentinel easy to mistake for a very low trust level.
+   */
+  INVALID: -2,
+};
+
+/**
+ * Whether a value from `isValidKeyForRecipient()` permits use of the key.
+ *
+ * An explicit set rather than a threshold, so that renumbering the vocabulary
+ * cannot silently change the answer -- which is exactly what a `>= 1` test would
+ * do, since NEVER is 2.
+ *
+ * @param {integer} level - From `isValidKeyForRecipient()`.
+ * @returns {boolean} true if the key may be used for this recipient.
+ */
+export function isValidityUsable(level) {
+  return (
+    level === OpenPgpValidity.UNDEFINED ||
+    level === OpenPgpValidity.MARGINAL ||
+    level === OpenPgpValidity.FULL ||
+    level === OpenPgpValidity.ULTIMATE
+  );
+}
+
 export var EnigmailConstants = {
   POSSIBLE_PGPMIME: -2081,
 
