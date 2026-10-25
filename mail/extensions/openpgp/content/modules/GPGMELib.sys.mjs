@@ -442,6 +442,12 @@ function enableGPGMELibJS() {
               emails,
               bitfield: key.contents.bitfield,
               subkeys,
+              // What the user has declared about this key, as opposed to what
+              // its signatures prove. gpgme's validity values are the same six
+              // numbers as `OpenPgpValidity`, so nothing has to be translated
+              // between the two vocabularies -- which is why Item 88 can drive
+              // gpg's own database instead of keeping a second copy of trust.
+              ownerTrust: key.contents.owner_trust,
             });
           }
         }

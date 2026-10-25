@@ -4184,10 +4184,7 @@ export var RNP = {
       throw new Error("rnp_key_is_sub failed");
     }
     if (is_sub.value) {
-      const primary = this.getPrimaryKeyHandleFromSub(
-        RNPLib.ffi,
-        handle
-      );
+      const primary = this.getPrimaryKeyHandleFromSub(RNPLib.ffi, handle);
       if (!primary) {
         tracker.release();
         return false;
@@ -7105,6 +7102,156 @@ export var RNP = {
 
     await this.saveKeyRings();
     return true;
+  },
+
+  /**
+   * Certify another party's key with one of the user's own (D18(b), Item 92).
+   *
+   * The operation Enigmail called "sign key", and the one that makes strict
+   * mode useful rather than merely quiet: it produces a certification that
+   * gpg's computed validity counts, and that survives being exported to
+   * another machine. Item 88's owner trust does neither -- it asserts
+   * locally and grants authority to validate others.
+   *
+   * **The signer and the target are different keys.** `_editSelfCertification`
+   * certifies a user ID of the key that holds it, which is right for making a
+   * user ID primary on your own key; this takes the signer separately, and the
+   * library supports that directly -- `rnp_key_certification_create(signer,
+   * uid, ...)` where the uid belongs to the target.
+   *
+   * The certification type is left to the library, which picks GENERIC for a
+   * key that is not your own. Naming POSITIVE would claim a stronger statement
+   * than "I have checked this is the right key", and RNP's own documentation
+   * says GENERIC is what certifying another key uses.
+   *
+   * @param {string} signerFpr - The user's key, which must have its secret.
+   * @param {string} targetFpr - The key being certified.
+   * @param {string} userId - Which user ID of the target to certify.
+   * @returns {Promise<boolean>} true if the certification was made and saved.
+   */
+  async certifyKey(signerFpr, targetFpr, userId) {
+    if (!signerFpr || !targetFpr) {
+      return false;
+    }
+    // A key cannot meaningfully certify itself through this path; the self
+    // case is `_editSelfCertification`, and routing it here would create a
+    // second, subtly different way to do the same thing.
+    if (signerFpr.toUpperCase() == targetFpr.toUpperCase()) {
+      return false;
+    }
+    if (!this._keyIsInTheRing(signerFpr)) {
+      return false;
+    }
+
+    const tracker =
+      RnpPrivateKeyUnlockTracker.constructFromFingerprint(signerFpr);
+    let targetKey = null;
+    try {
+      if (!tracker.available()) {
+        return false;
+      }
+      tracker.setAllowPromptingUserForPassword(true);
+      tracker.setAllowAutoUnlockWithCachedPasswords(true);
+      tracker.setPasswordCache({ passwords: [] });
+      await tracker.unlock();
+      if (!tracker.isUnlocked()) {
+        return false;
+      }
+
+      // A handle on the key being certified, from the ring rather than from
+      // the tracker: the tracker's handle is the signer. The public entry
+      // point is the one that takes a `0x`-prefixed identifier and returns a
+      // primary-key handle.
+      targetKey = this.getKeyHandleByKeyIdOrFingerprint(
+        RNPLib.ffi,
+        "0x" + targetFpr.replace(/^0x/i, "")
+      );
+      if (!targetKey) {
+        return false;
+      }
+
+      const uidHandle = this._findUidHandle(targetKey, userId);
+      if (!uidHandle) {
+        return false;
+      }
+
+      const sig = new RNPLib.rnp_signature_handle_t();
+      try {
+        // Null, not "": see the comment in `_editSelfCertification` -- an
+        // empty JS string becomes a pointer to a NUL byte, which RNP does not
+        // read as "choose for me".
+        if (
+          RNPLib.rnp_key_certification_create(
+            tracker.getHandle(),
+            uidHandle,
+            null,
+            sig.address()
+          )
+        ) {
+          throw new Error("rnp_key_certification_create failed");
+        }
+        if (RNPLib.rnp_key_signature_sign(sig)) {
+          throw new Error("rnp_key_signature_sign failed");
+        }
+      } finally {
+        RNPLib.rnp_signature_handle_destroy(sig);
+        RNPLib.rnp_uid_handle_destroy(uidHandle);
+      }
+    } finally {
+      if (targetKey) {
+        RNPLib.rnp_key_handle_destroy(targetKey);
+      }
+      tracker.release();
+    }
+
+    await this.saveKeyRings();
+    return true;
+  },
+
+  /**
+   * How many signatures one of a key's user IDs carries.
+   *
+   * A certification adds exactly one, so this is how a caller observes that
+   * one was made -- and, after re-reading an exported block, that it is
+   * exportable rather than merely in memory. The engine has no API for "is
+   * this key valid", because validity is a client-side computation over the
+   * signatures; the signature count is the fact underneath it.
+   *
+   * @param {string} fpr - Primary key fingerprint.
+   * @param {string} userId - Which user ID, matched as `_findUidHandle` does.
+   * @returns {?integer} The count, or null when the key or user ID is absent.
+   */
+  getUidSignatureCount(fpr, userId) {
+    if (!fpr || !this._keyIsInTheRing(fpr)) {
+      return null;
+    }
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(
+      RNPLib.ffi,
+      "0x" + fpr.replace(/^0x/i, "")
+    );
+    if (!handle || handle.isNull()) {
+      return null;
+    }
+    let uidHandle = null;
+    try {
+      uidHandle = this._findUidHandle(handle, userId);
+      if (!uidHandle) {
+        return null;
+      }
+      const count = new lazy.ctypes.size_t();
+      if (RNPLib.rnp_uid_get_signature_count(uidHandle, count.address())) {
+        throw new Error("rnp_uid_get_signature_count failed");
+      }
+      // `size_t` reads back as a ctypes object rather than a primitive;
+      // returning it un-converted makes every caller's arithmetic silently
+      // stringify, which is how a count of 2 can compare unequal to 2.
+      return Number(count.value);
+    } finally {
+      if (uidHandle) {
+        RNPLib.rnp_uid_handle_destroy(uidHandle);
+      }
+      RNPLib.rnp_key_handle_destroy(handle);
+    }
   },
 
   /**

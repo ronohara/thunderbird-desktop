@@ -368,6 +368,12 @@ menu-manage-keys =
     .label = Key Assistant
     .accesskey = A
 
+# Item 91: applies to this message only. It relaxes the requirement that a key
+# be trusted; it does not change what the keyring says afterwards, and it does
+# not make a rejected key usable.
+menu-trust-keys =
+    .label = Trust Keys for This Message
+
 menu-view-certificates =
     .label = View Certificates Of Recipients
     .accesskey = V
@@ -527,6 +533,21 @@ encrypted-bcc-warning = When sending an encrypted message, recipients in Bcc are
 encrypted-bcc-ignore-button = Understood
 
 auto-disable-e2ee-warning = End-to-end encryption for this message was automatically disabled.
+
+## Item 90: the message is about to go out unencrypted, and the user asked to
+## be told. Each variant names a different cause, because the three lead the
+## user somewhere different.
+unencrypted-send-warning = This message will be sent unencrypted.
+# Variables:
+#   $addr (String) - The recipient with no usable key.
+unencrypted-send-warning-no-key-single =
+    This message will be sent unencrypted. No usable key was found for { $addr }.
+# Variables:
+#   $count (Number) - How many recipients have no usable key.
+unencrypted-send-warning-no-key-multi =
+    This message will be sent unencrypted. No usable key was found for { $count } recipients.
+unencrypted-send-warning-user-off =
+    This message will be sent unencrypted, because you turned encryption off for it.
 
 
 # Variables:

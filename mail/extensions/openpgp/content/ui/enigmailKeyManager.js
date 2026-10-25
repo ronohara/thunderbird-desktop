@@ -46,6 +46,12 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   RNP: "chrome://openpgp/content/modules/RNP.sys.mjs",
 });
+var { GnuPGAgent } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
+);
+var { OpenPgpValidity } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/constants.sys.mjs"
+);
 
 const ENIG_KEY_EXPIRED = "e";
 const ENIG_KEY_REVOKED = "r";
@@ -336,6 +342,74 @@ function enigmailKeyDetails(keyId = null) {
   if (EnigmailWindows.openKeyDetails(window, keyId, false)) {
     refreshKeys();
   }
+}
+
+/** The five levels this dialog can set, keyed by the name its menu uses. */
+const OWNER_TRUST_LEVELS = {
+  undefined: OpenPgpValidity.UNDEFINED,
+  never: OpenPgpValidity.NEVER,
+  marginal: OpenPgpValidity.MARGINAL,
+  full: OpenPgpValidity.FULL,
+  ultimate: OpenPgpValidity.ULTIMATE,
+};
+
+/**
+ * Record what the user declares about the selected key's trust.
+ *
+ * Two stores, two mechanisms, and the difference is not an implementation
+ * detail a caller can ignore:
+ *
+ *   - a key GnuPG holds has its trust in gpg's own database, so this writes
+ *     there and gpg remains the single authority;
+ *   - a key in this profile has an *acceptance* value instead, which the Key
+ *     Details dialog already edits. Rather than open a second way to change
+ *     it, this opens that dialog and says so -- one editor for one fact, and
+ *     the wording in both places calls it owner trust.
+ *
+ * `unknown` is not offered. gpg's ownertrust scale has no value for "nobody
+ * has looked at this key", so writing anything there would record a decision
+ * the user did not make.
+ *
+ * @param {string} name - One of the keys of `OWNER_TRUST_LEVELS`.
+ */
+async function enigmailSetOwnerTrust(name) {
+  const validity = OWNER_TRUST_LEVELS[name];
+  if (validity === undefined) {
+    return;
+  }
+
+  const keyList = getSelectedKeys();
+  if (keyList.length != 1) {
+    return;
+  }
+  const keyObj = gKeyList[keyList[0]];
+
+  if (!EnigmailKeyRing.isExternalKey(keyObj)) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-man-owner-trust-internal")
+    );
+    enigmailKeyDetails(keyObj.keyId);
+    return;
+  }
+
+  const result = await GnuPGAgent.setOwnerTrust(keyObj.fpr, validity);
+  if (!result.ok) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-man-owner-trust-failed", {
+        reason: result.output,
+      })
+    );
+    return;
+  }
+
+  // The transient cache holds the old value, and the listing is what the row
+  // is drawn from, so both are dropped before the refresh.
+  EnigmailKeyRing.clearGnuPgKeyCache();
+  refreshKeys();
 }
 
 /**

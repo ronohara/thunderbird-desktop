@@ -606,8 +606,45 @@
                 data-l10n-id="email-e2ee-turn-off-notify"
                 oncommand="gPrivacyPane.updateE2eeCheckboxes();"/>
 
+      <!-- Item 90: a different event from the one above. That one says
+           encryption was turned off for me; this one says I am about to send
+           in the clear. -->
+      <checkbox id="emailE2eeWarnUnencrypted"
+                preference="mail.e2ee.warn_on_unencrypted_send"
+                data-l10n-id="email-e2ee-warn-unencrypted"/>
+
       <separator class="thin"/>
       <description data-l10n-id="email-e2ee-automatism-note"/>
+    </html:fieldset>
+
+    <!-- Item 87: which keys count as acceptable. In this same group rather
+         than a pane of its own, because it is part of the answer to "when does
+         mail get encrypted" and a second screen would split that answer. -->
+    <html:fieldset id="emailE2eeKeyAcceptance" data-category="panePrivacy">
+      <html:legend data-l10n-id="email-e2ee-key-acceptance"></html:legend>
+      <html:p data-l10n-id="email-e2ee-key-acceptance-intro"/>
+      <radiogroup id="emailE2eeKeyAcceptanceChoice" orient="vertical">
+        <radio id="emailE2eeAcceptUsable"
+               value="usable"
+               data-l10n-id="email-e2ee-key-acceptance-usable"
+               oncommand="gPrivacyPane.updateE2eeAcceptance();"/>
+        <radio id="emailE2eeAcceptTrusted"
+               value="trusted"
+               data-l10n-id="email-e2ee-key-acceptance-trusted"
+               oncommand="gPrivacyPane.updateE2eeAcceptance();"/>
+      </radiogroup>
+      <description id="emailE2eeKeyAcceptanceNote"
+                   data-l10n-id="email-e2ee-key-acceptance-note"/>
+    </html:fieldset>
+
+    <!-- Item 89: the editor for per-recipient rules. It edits the file the
+         preference names; there is no second store behind it. -->
+    <html:fieldset id="emailE2eeRecipientRules" data-category="panePrivacy">
+      <html:legend data-l10n-id="email-e2ee-recipient-rules"></html:legend>
+      <html:p data-l10n-id="email-e2ee-recipient-rules-intro"/>
+      <button id="emailE2eeEditRules"
+              data-l10n-id="openpgp-rules-button"
+              oncommand="gPrivacyPane.editRecipientRules()"/>
     </html:fieldset>
     </html:div>
 

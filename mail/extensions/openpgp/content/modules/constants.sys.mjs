@@ -58,6 +58,44 @@ export function isValidityUsable(level) {
   );
 }
 
+/**
+ * Whether a value from `isValidKeyForRecipient()` says the user has judged the
+ * key, rather than merely tolerated it.
+ *
+ * The strict policy (`mail.openpgp.require_trusted_keys`) is the difference
+ * between this and `isValidityUsable()`. Enigmail offered the choice and
+ * defaulted to permissive; Item 87 restores it, and this is the one place the
+ * two answers differ.
+ *
+ * `UNDEFINED` is excluded even though it is usable: it means "used without
+ * verification", which is exactly what a user who asked for trust did not ask
+ * for. `MARGINAL` is excluded too -- it is a web-of-trust level GnuPG computes
+ * from other people's signatures, and a user who wants their own judgment
+ * applied should not have it satisfied by a stranger's.
+ *
+ * `ULTIMATE` is included because it is the value a key gets when the user has
+ * both halves of it, which is a stronger statement than FULL rather than a
+ * weaker one.
+ *
+ * @param {integer} level - From `isValidKeyForRecipient()`.
+ * @returns {boolean}
+ */
+export function isValidityTrusted(level) {
+  return level === OpenPgpValidity.FULL || level === OpenPgpValidity.ULTIMATE;
+}
+
+/**
+ * The single gate the selection paths use, so the policy is applied in one
+ * place rather than being restated at each call site.
+ *
+ * @param {integer} level - From `isValidKeyForRecipient()`.
+ * @param {boolean} requireTrusted - Whether the strict policy is in force.
+ * @returns {boolean} true if the key may be used for this recipient.
+ */
+export function isValidityAcceptable(level, requireTrusted) {
+  return requireTrusted ? isValidityTrusted(level) : isValidityUsable(level);
+}
+
 export var EnigmailConstants = {
   POSSIBLE_PGPMIME: -2081,
 

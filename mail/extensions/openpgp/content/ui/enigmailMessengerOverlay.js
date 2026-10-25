@@ -2735,6 +2735,13 @@ Enigmail.msg = {
 
       if (sigKeyInfo) {
         document.getElementById("viewSignatureKey").collapsed = false;
+        // The two decisions about this key, shown beside the state they are
+        // about. Owner trust is offered for either store; certifying needs a
+        // key of the user's own with its secret part, so it is disabled rather
+        // than hidden when there is none -- a missing button says nothing about
+        // why it is missing.
+        document.getElementById("signerKeyActions").collapsed = false;
+        document.getElementById("certifySignerKey").disabled = !ownSigningKey();
       }
     }
 

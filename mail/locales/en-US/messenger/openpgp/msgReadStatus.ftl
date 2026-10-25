@@ -15,6 +15,22 @@ message-security-button =
 
 openpgp-view-signer-key =
     .label = View signer key
+## D18(b), Item 92: two decisions about the key that signed the message, in
+## the panel that shows the signature. They are different operations and the
+## wording keeps them apart -- certifying produces a signature others can
+## verify, owner trust asserts locally.
+openpgp-certify-signer-key =
+    .label = Certify…
+openpgp-trust-signer-key =
+    .label = Set Owner Trust…
+# Variables:
+# $signer (String) - The owner of the key that signed the message.
+# $own (String) - The user's own key, which will sign the certification.
+openpgp-certify-confirm =
+    Certify that { $signer }'s key belongs to them, using your own key { $own }? The certification can be exported and is visible to others, unlike owner trust.
+openpgp-certify-no-own-key = Certifying a key needs your own OpenPGP key with its private part. This identity has no usable one.
+openpgp-certify-failed =
+    The key could not be certified. It may be revoked, or your own key may need its passphrase.
 openpgp-view-your-encryption-key =
     .label = View your decryption key
 openpgp-openpgp = OpenPGP

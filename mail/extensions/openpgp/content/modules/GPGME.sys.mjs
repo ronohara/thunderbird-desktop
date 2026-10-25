@@ -162,6 +162,40 @@ export var GPGME = {
   },
 
   /**
+   * What the user has declared about a key, from gpg's own trust database.
+   *
+   * The number is one of `OpenPgpValidity` -- gpgme's validity type and this
+   * build's vocabulary are the same six values -- so a caller can compare it
+   * with anything else that speaks that vocabulary without a mapping table.
+   *
+   * A listing rather than a query: `gpgme_op_keylist_start` with the
+   * fingerprint as its pattern returns the one key, and `owner_trust` is read
+   * off the record gpgme already has. No key material is read.
+   *
+   * @param {string} fingerprint - Primary key fingerprint.
+   * @returns {?integer} One of `OpenPgpValidity`, or null when GnuPG is not
+   *   available or does not hold the key.
+   */
+  getOwnerTrust(fingerprint) {
+    if (!fingerprint || !this.init()) {
+      return null;
+    }
+    const wanted = fingerprint.replace(/^0x/i, "").toUpperCase();
+    let keys;
+    try {
+      keys = GPGMELib.listKeys(wanted, false);
+    } catch (ex) {
+      console.warn("Listing GnuPG keys to read owner trust failed", ex);
+      return null;
+    }
+    // The pattern is a search, not an identity: it can match a subkey or a
+    // user ID containing the string, so the record is picked by fingerprint
+    // rather than by being the only result.
+    const match = keys.find(k => k.fpr == wanted);
+    return match ? match.ownerTrust : null;
+  },
+
+  /**
    * Every public key in the external GnuPG keyring, exported as armored blocks.
    *
    * For a caller that has to show the whole keyring rather than answer a

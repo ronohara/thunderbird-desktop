@@ -90,6 +90,78 @@ openpgp-key-id-label =
     .label = Key ID
 
 openpgp-key-man-dialog-title = OpenPGP Key Manager
+## Per-recipient rules (Item 89). The file named by
+## mail.openpgp.alias_rules_file is the only store; this dialog edits it.
+openpgp-rules-title = Per-recipient rules
+openpgp-rules-intro = A rule names a recipient and sets how messages to them are handled. It can require or forbid encryption, signing and PGP/MIME. It cannot make a key acceptable — that is what accepting a key does.
+openpgp-rules-column-recipient = Recipient
+openpgp-rules-column-encrypt = Encrypt
+openpgp-rules-column-sign = Sign
+openpgp-rules-column-pgpmime = PGP/MIME
+openpgp-rules-add =
+    .label = Add Rule…
+openpgp-rules-edit =
+    .label = Edit…
+openpgp-rules-remove =
+    .label = Remove
+openpgp-rules-form-add-title = New rule
+# Variables:
+# $recipient (String) - The address or domain the rule applies to.
+openpgp-rules-form-edit-title = Rule for { $recipient }
+openpgp-rules-email-label = Email address or @domain
+openpgp-rules-keys-label = Key fingerprints or key IDs
+openpgp-rules-keys-hint = One per line. Leave empty for a rule that names no key — for example "never encrypt to this address", which needs only the settings below.
+openpgp-rules-encrypt = Encrypt
+openpgp-rules-sign = Sign
+openpgp-rules-pgpmime = Use PGP/MIME
+openpgp-rules-unset-hint = "Leave unchanged" means the rule says nothing about this setting, which is different from saying no.
+openpgp-rules-yes = Yes
+openpgp-rules-no = No
+openpgp-rules-maybe = If possible
+openpgp-rules-unchanged = Leave unchanged
+openpgp-rules-save-rule =
+    .label = Save Rule
+openpgp-rules-cancel-rule =
+    .label = Cancel
+openpgp-rules-unidentified = (no recipient)
+openpgp-rules-error-recipient-required = Enter an email address or @domain for this rule.
+openpgp-rules-error-email-invalid = An email rule needs an address containing @.
+openpgp-rules-error-domain-invalid = A domain rule must not contain @ — write it as @example.com.
+openpgp-rules-error-duplicate = There is already a rule for { $recipient }.
+openpgp-rules-error-read-failed = This dialog could not read the rules file, so it will not overwrite it. Fix the file and reopen this dialog.
+openpgp-rules-error-write-failed = The rules file could not be written: { $error }
+openpgp-rules-confirm-remove = Remove the rule for { $recipient }?
+openpgp-rules-button =
+    .label = Per-recipient Rules…
+
+## Owner trust (Item 88). Two stores, two mechanisms: for a key GnuPG holds the
+## value is gpg's own database, and for a key in this profile it is the
+## acceptance value the Key Details dialog edits. The wording here names the
+## concept the same way in both places.
+# Attribute-only, like openpgp-key-man-ctx-copy beside it: a message with a
+# value would make Fluent replace the <menu>'s children with the text, which
+# would delete the popup it labels.
+openpgp-key-man-owner-trust =
+    .label = Set Owner Trust
+openpgp-key-man-owner-trust-undefined =
+    .label = Undefined
+openpgp-key-man-owner-trust-never =
+    .label = Never trust
+openpgp-key-man-owner-trust-marginal =
+    .label = Marginally trust
+openpgp-key-man-owner-trust-full =
+    .label = Fully trust
+openpgp-key-man-owner-trust-ultimate =
+    .label = Ultimately trust
+# Shown after setting owner trust on a key GnuPG holds, when gpg refused the
+# write. The reason gpg gave is appended.
+openpgp-key-man-owner-trust-failed = GnuPG did not accept the trust change: { $reason }
+# Shown when owner trust is requested for a key in this profile. Trust for these
+# keys is the acceptance value, which the Key Details dialog already edits, so
+# the answer points there rather than opening a second way to change it.
+openpgp-key-man-owner-trust-internal =
+    This key is stored in this profile, so its trust is the acceptance setting in Key Details. Opening that dialog.
+
 # Shown when an operation that acts on this profile's keys is attempted on a
 # key that GnuPG holds instead. The key is listed here so the dialog can say
 # where it lives; the copy on screen is public only, and the authoritative one
@@ -645,6 +717,10 @@ key-revoked-revocation-code-retired = The key was revoked because the key is ret
 # $reason (String) - Key owner entered reason for revocation.
 key-revoked-revocation-reason = Revocation reason as stated by key owner: { $reason }
 key-do-you-accept = Do you accept this key for verifying digital signatures and for encrypting messages?
+# Item 88: this dialog and the Key Manager describe one fact under two names.
+# For a key GnuPG holds the value lives in gpg's trust database and is called
+# owner trust; for a key in this profile it is this acceptance setting.
+openpgp-acceptance-owner-trust-note = The Key Manager calls this setting “owner trust”. For a key GnuPG holds, the value is stored by GnuPG itself; for a key in this profile, it is the answer below.
 # Variables:
 # $addr (String) - Email address the key claims it belongs to.
 key-verification = Verify the fingerprint of the key using a secure communication channel other than email to make sure that it’s really the key of { $addr }.

@@ -1787,6 +1787,26 @@ export var EnigmailKeyRing = {
    * @returns {integer} an acceptance level from -1 to 3. Or -2 for
    *   "doesn't match email" or "not usable"
    */
+  /**
+   * Whether keys must be trusted rather than merely usable.
+   *
+   * Item 87's setting. Enigmail asked the same question and defaulted to
+   * "usable"; the default here is the same and the strict answer is opt-in,
+   * because a strict default in a build whose users have never signed anybody
+   * would refuse every correspondent.
+   *
+   * Read rather than cached: a preference change must take effect on the next
+   * send, and the cost is one pref lookup per recipient.
+   *
+   * @returns {boolean}
+   */
+  requiresTrustedKeys() {
+    return Services.prefs.getBoolPref(
+      "mail.openpgp.require_trusted_keys",
+      false
+    );
+  },
+
   async isValidKeyForRecipient(keyObj, emailAddr, allowExpired) {
     if (!emailAddr) {
       return OpenPgpConstants.OpenPgpValidity.INVALID;
@@ -1954,7 +1974,12 @@ export var EnigmailKeyRing = {
       // `INVALID` is negative and distinct from the six values: it means the key
       // is unusable for the address (revoked, expired, no encryption subkey, no
       // matching user ID), which is not a trust judgment at all.
-      if (!OpenPgpConstants.isValidityUsable(acceptanceLevel)) {
+      if (
+        !OpenPgpConstants.isValidityAcceptable(
+          acceptanceLevel,
+          this.requiresTrustedKeys()
+        )
+      ) {
         continue;
       }
       if (seen.has(keyObj.keyId)) {
@@ -1966,7 +1991,14 @@ export var EnigmailKeyRing = {
 
     if (!found.length) {
       if (details) {
-        details.msg = "ProblemNoKey";
+        // Two different answers, because they ask the user to do different
+        // things. "No key" means find one; "not trusted" means judge the one
+        // you already have, which the Key Details and Key Manager dialogs can
+        // now do. Reporting the second as the first sends a user looking for
+        // a key when the key is on their screen.
+        details.msg = this.requiresTrustedKeys()
+          ? "ProblemKeyNotTrusted"
+          : "ProblemNoKey";
       }
       lazy.log.debug(
         `Found no valid encryption key with enough trust level for ${emailAddr}`
@@ -2138,6 +2170,19 @@ export var EnigmailKeyRing = {
 
       const aliasKeyList = this.getAliasKeyList(addr);
       if (aliasKeyList) {
+        // An empty list is a rule that names no key -- "never encrypt to this
+        // address" -- not an absence of a rule. The loop below does nothing
+        // for it, so without this branch the address would fall through as
+        // satisfied: a rule saying "do not" would read as "fine".
+        if (!aliasKeyList.length) {
+          keyMissing = true;
+          if (details) {
+            details.errArray.push({ addr, msg: "ProblemNoKey" });
+          }
+          lazy.log.debug(`Alias rule for ${addr} names no key.`);
+          continue;
+        }
+
         for (const entry of aliasKeyList) {
           let foundError = true;
 
@@ -2156,11 +2201,51 @@ export var EnigmailKeyRing = {
             if (!acceptanceResult || acceptanceResult != "rejected") {
               foundError = false;
             }
+
+            // A rule may require encryption; it may not make a key
+            // acceptable. Where a rule demands encryption and the key it
+            // names is below the trust threshold, the send is refused here
+            // -- before it is attempted -- and the refusal names the address
+            // *and both facts*: that a rule asked for this, and that the key
+            // is not trusted. Enigmail had no equivalent because its rules
+            // carried no key.
+            //
+            // Only the `always` answer is treated this way. `maybe` is a rule
+            // saying "encrypt if you can", which an untrusted key can honour
+            // under the permissive policy; refusing on it would make a
+            // permissive default unusable.
+            if (!foundError && lazy.OpenPGPAlias.requiresEncryption(addr)) {
+              const level = await this.isValidKeyForRecipient(key, addr, false);
+              if (!OpenPgpConstants.isValidityTrusted(level)) {
+                foundError = true;
+                keyMissing = true;
+                if (details) {
+                  // One refusal with a reason that can be acted on, rather
+                  // than this beside the generic "alias problem": two errors
+                  // saying different things about one address is how a user
+                  // learns to ignore both.
+                  details.errArray.push({
+                    addr,
+                    msg: "ProblemRuleRequiresUntrustedKey",
+                  });
+                }
+                lazy.log.warn(
+                  `Rule requires encryption to ${addr}, but ${key.fpr} is ` +
+                    `not trusted.`
+                );
+              }
+            }
           }
 
           if (foundError) {
             keyMissing = true;
-            if (details) {
+            if (
+              details &&
+              !details.errArray.some(
+                e =>
+                  e.addr == addr && e.msg == "ProblemRuleRequiresUntrustedKey"
+              )
+            ) {
               const detEl = {};
               detEl.addr = addr;
               detEl.msg = "alias problem";
@@ -2642,9 +2727,24 @@ export var EnigmailKeyRing = {
         const { OpenPgpValidity } = OpenPgpConstants;
         switch (acceptanceLevel) {
           case OpenPgpValidity.UNDEFINED:
-          case OpenPgpValidity.FULL:
-            keyMeta.readiness = isExpired ? "expiredAccepted" : "accepted";
+          case OpenPgpValidity.FULL: {
+            // Under the strict policy an `UNDEFINED` key is not accepted,
+            // because the send gate will refuse it. Reporting it as accepted
+            // here would have the Key Assistant say the recipient is fine and
+            // the send then fail on the same key -- two surfaces disagreeing
+            // about one fact, which is the failure this stage keeps meeting.
+            // It reads as undecided instead, so the assistant offers to
+            // resolve it and accepting it as verified makes it FULL.
+            const accepted =
+              OpenPgpValidity.FULL == acceptanceLevel ||
+              !this.requiresTrustedKeys();
+            if (accepted) {
+              keyMeta.readiness = isExpired ? "expiredAccepted" : "accepted";
+            } else {
+              keyMeta.readiness = isExpired ? "expiredUndecided" : "undecided";
+            }
             break;
+          }
           case OpenPgpValidity.NEVER:
             keyMeta.readiness = isExpired ? "expiredRejected" : "rejected";
             break;

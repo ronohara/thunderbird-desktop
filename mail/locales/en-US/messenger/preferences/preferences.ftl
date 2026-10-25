@@ -940,7 +940,24 @@ email-e2ee-turn-off =
     .label = Automatically turn off encryption when recipients change and encryption is no longer possible
 email-e2ee-turn-off-notify =
     .label = Show a notification whenever encryption is turned off automatically
+email-e2ee-warn-unencrypted =
+    .label = Warn me before sending a message unencrypted
 email-e2ee-automatism-note = Note: You can also manually turn encryption on or off while writing a message. Replying to an encrypted messages always turns on encryption.
+
+## Which keys count as acceptable (Item 87)
+
+email-e2ee-key-acceptance = Which recipient keys can be used
+email-e2ee-key-acceptance-intro = When you send an encrypted message, { -brand-short-name } needs one usable key for every recipient. This setting says what "usable" means.
+email-e2ee-key-acceptance-usable =
+    .label = Any key that is not rejected
+email-e2ee-key-acceptance-trusted =
+    .label = Only keys I have marked as trusted
+email-e2ee-key-acceptance-note = The stricter setting refuses to send to a recipient whose key you have not judged, and names the address when that happens. Mark a key as trusted in its details, or set owner trust for it in the OpenPGP Key Manager.
+
+## Per-recipient rules (Item 89)
+
+email-e2ee-recipient-rules = Rules for individual recipients
+email-e2ee-recipient-rules-intro = A rule can require or forbid encryption, signing and PGP/MIME for one address or domain, and can name the keys to use. Rules are stored in one file, named by the mail.openpgp.alias_rules_file preference.
 
 ## DoH Section
 

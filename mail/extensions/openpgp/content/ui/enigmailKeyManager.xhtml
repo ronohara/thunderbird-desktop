@@ -318,6 +318,34 @@
             class="requires-single-key-selection"
             oncommand="enigmailKeyDetails()"
           />
+          <menu
+            id="ctxOwnerTrust"
+            data-l10n-id="openpgp-key-man-owner-trust"
+            class="requires-single-key-selection"
+          >
+            <menupopup id="ctxOwnerTrustPopup">
+              <menuitem
+                data-l10n-id="openpgp-key-man-owner-trust-undefined"
+                oncommand="enigmailSetOwnerTrust('undefined')"
+              />
+              <menuitem
+                data-l10n-id="openpgp-key-man-owner-trust-never"
+                oncommand="enigmailSetOwnerTrust('never')"
+              />
+              <menuitem
+                data-l10n-id="openpgp-key-man-owner-trust-marginal"
+                oncommand="enigmailSetOwnerTrust('marginal')"
+              />
+              <menuitem
+                data-l10n-id="openpgp-key-man-owner-trust-full"
+                oncommand="enigmailSetOwnerTrust('full')"
+              />
+              <menuitem
+                data-l10n-id="openpgp-key-man-owner-trust-ultimate"
+                oncommand="enigmailSetOwnerTrust('ultimate')"
+              />
+            </menupopup>
+          </menu>
         </menupopup>
       </popupset>
 

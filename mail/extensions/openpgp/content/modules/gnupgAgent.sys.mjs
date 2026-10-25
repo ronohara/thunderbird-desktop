@@ -38,9 +38,12 @@ export var GnuPGAgent = {
    *
    * @param {string} command - Executable name, looked up on PATH.
    * @param {string[]} args - Arguments.
+   * @param {string} [stdin] - Text to write to the child's standard input.
+   *   Omitted means the child gets none, which is what every read-only query
+   *   wants: a gpg that decides to prompt must not find a pipe to prompt on.
    * @returns {Promise<object>} { ok, output } where output is stdout+stderr.
    */
-  async _run(command, args) {
+  async _run(command, args, stdin) {
     let path;
     try {
       path = await lazy.Subprocess.pathSearch(command);
@@ -63,11 +66,17 @@ export var GnuPGAgent = {
       const proc = await lazy.Subprocess.call({
         command: path,
         arguments: args,
+        stdin: stdin === undefined ? "ignore" : "pipe",
         stdout: "pipe",
         stderr: "pipe",
         environment: environment.environment,
         environmentAppend: environment.environmentAppend,
       });
+
+      if (stdin !== undefined) {
+        proc.stdin.write(stdin);
+        await proc.stdin.close();
+      }
 
       let output = "";
       const decoder = new TextDecoder();
@@ -94,6 +103,68 @@ export var GnuPGAgent = {
     } catch (ex) {
       return { ok: false, output: String(ex) };
     }
+  },
+
+  /**
+   * Record what the user declares about a key GnuPG holds.
+   *
+   * Trust for a keyring key is gpg's own database, so this drives gpg rather
+   * than keeping a second copy: a value stored anywhere else would disagree
+   * with the engine that actually computes validity, and the disagreement
+   * would show as a key gpg refuses to use while Thunderbird says it is
+   * trusted.
+   *
+   * `gpg --import-ownertrust` takes lines of `fingerprint:level:` on a scale
+   * that starts one above gpgme's: it has `undefined` at 2, `never` at 3,
+   * `marginal` at 4, `full` at 5 and `ultimate` at 6. gpgme reports the same
+   * states as 1 to 5, with an extra `unknown` at 0.
+   *
+   * **The offset is one, not two, and gpgme's 0 has no equivalent on the
+   * write side.** `--import-ownertrust` cannot express "unknown" -- an absent
+   * entry is what that means -- so `OpenPgpValidity.UNKNOWN` is refused here
+   * rather than written as `undefined`. They are not the same state: one is a
+   * key nobody has looked at, the other is a key the user deliberately left
+   * undecided, and writing the second when the user asked for the first would
+   * record a decision they did not make.
+   *
+   * Both numbers were measured rather than taken from documentation: setting
+   * each value and reading gpg's own listing back gives `q`, `n`, `m`, `f`
+   * and `u` for 2 to 6.
+   *
+   * @param {string} fingerprint - Primary key fingerprint.
+   * @param {integer} validity - One of `OpenPgpValidity`.
+   * @returns {Promise<object>} { ok, output }. `ok` false means gpg refused;
+   *   the caller must report that rather than assume the write landed.
+   */
+  async setOwnerTrust(fingerprint, validity) {
+    const fpr = String(fingerprint || "")
+      .replace(/^0x/i, "")
+      .toUpperCase();
+    if (!fpr) {
+      return { ok: false, output: "no fingerprint" };
+    }
+
+    // gpgme's UNDEFINED is 1 and gpg's import scale starts at 2, so every
+    // level that exists is written one higher. UNKNOWN (0) is absent on
+    // purpose: gpg has no ownertrust value for "nobody has looked at this".
+    const GPG_OWNERTRUST_OFFSET = 1;
+    const settable = new Set([1, 2, 3, 4, 5]);
+    if (!settable.has(validity)) {
+      return {
+        ok: false,
+        output:
+          `owner trust ${validity} cannot be written: gpg's ownertrust ` +
+          `scale has no value for it`,
+      };
+    }
+
+    const record = `${fpr}:${validity + GPG_OWNERTRUST_OFFSET}:\n`;
+    const result = await this._run(
+      "gpg",
+      ["--batch", "--no-tty", "--yes", "--import-ownertrust"],
+      record
+    );
+    return { ok: result.ok, output: result.output };
   },
 
   /**

@@ -61,6 +61,7 @@ openpgp.jar:
   content/openpgp/ui/keyDetailsDlg.js                (content/ui/keyDetailsDlg.js)
   content/openpgp/ui/keyImportInfoDialog.js          (content/ui/keyImportInfoDialog.js)
   content/openpgp/ui/keyWizard.js                    (content/ui/keyWizard.js)
+  content/openpgp/ui/rulesEditor.js                  (content/ui/rulesEditor.js)
   content/openpgp/ui/backupKeyPassword.xhtml         (content/ui/backupKeyPassword.xhtml)
   content/openpgp/ui/changeExpiryDlg.xhtml           (content/ui/changeExpiryDlg.xhtml)
   content/openpgp/ui/confirmPubkeyImport.xhtml       (content/ui/confirmPubkeyImport.xhtml)
@@ -68,3 +69,4 @@ openpgp.jar:
   content/openpgp/ui/keyDetailsDlg.xhtml             (content/ui/keyDetailsDlg.xhtml)
   content/openpgp/ui/keyImportInfoDialog.xhtml       (content/ui/keyImportInfoDialog.xhtml)
   content/openpgp/ui/keyWizard.xhtml                 (content/ui/keyWizard.xhtml)
+  content/openpgp/ui/rulesEditor.xhtml               (content/ui/rulesEditor.xhtml)

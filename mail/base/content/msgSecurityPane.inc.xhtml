@@ -84,6 +84,21 @@
                   oncommand="viewSignatureKey(event.target.closest('panel'))" collapsed="collapsed"/>
         </hbox>
 
+        <!-- D18(b), Item 92: the two decisions about the key that just signed
+             this message, where the user is when they make them. They are
+             different operations and the wording keeps them apart: certifying
+             produces a signature others can see, owner trust asserts locally
+             and grants authority to validate others. -->
+        <hbox id="signerKeyActions" class="message-security-container"
+              collapsed="collapsed" pack="end">
+          <button id="certifySignerKey" data-l10n-id="openpgp-certify-signer-key"
+                  class="button-focusable"
+                  oncommand="certifySignerKey(event.target.closest('panel'))" />
+          <button id="trustSignerKey" data-l10n-id="openpgp-trust-signer-key"
+                  class="button-focusable"
+                  oncommand="trustSignerKey(event.target.closest('panel'))" />
+        </hbox>
+
         <label id="encryptionLabel" class="message-security-label"/>
         <label id="encryptionHeader" collapsed="collapsed" />
         <description id="encryptionExplanation"/>

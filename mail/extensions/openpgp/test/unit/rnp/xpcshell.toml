@@ -8,6 +8,8 @@ tags = ["openpgp"]
 
 ["test_acceptanceExport.js"]
 
+["test_acceptancePolicy.js"]
+
 ["test_acceptanceStorage.js"]
 run-sequentially = true  # writes the profile-global acceptance store
 
@@ -18,6 +20,8 @@ run-sequentially = true  # writes the profile-global acceptance store
 ["test_armor.js"]
 
 ["test_badKeys.js"]
+
+["test_certifyKey.js"]
 
 ["test_decryptionEngine.js"]
 
@@ -49,6 +53,10 @@ run-sequentially = true  # queries the profile-global keyring and acceptance sto
 ["test_passphraseCacheNote.js"]
 
 ["test_pqcSubkey.js"]
+
+["test_recipientRules.js"]
+
+["test_ownerTrust.js"]
 run-if = ["nightly_build"]
 
 ["test_revocation.js"]
@@ -95,6 +103,8 @@ skip-if = ["os != 'linux'"]
 ["test_stage10.js"]
 
 ["test_stage11.js"]
+
+["test_stage13Verification.js"]
 
 ["test_strip.js"]
 

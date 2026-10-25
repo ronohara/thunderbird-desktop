@@ -1791,6 +1791,14 @@
 
           <menuseparator id="statusInfoSeparator"/>
 
+          <!-- Item 91: relax the strict key-acceptance policy for this
+               message. Hidden unless that policy is on, because otherwise
+               there is nothing for it to relax. -->
+          <menuitem id="menu_trustKeys_Menubar"
+                    type="checkbox"
+                    data-l10n-id="menu-trust-keys"
+                    value="trustkeys"
+                    hidden="hidden"/>
           <menuitem id="menu_recipientStatus_Menubar"
                     data-l10n-id="menu-manage-keys"
                     value="status"
@@ -1933,6 +1941,11 @@
 
         <menuseparator id="statusInfoSeparator"/>
 
+        <menuitem id="menu_trustKeys_Toolbar"
+                  type="checkbox"
+                  data-l10n-id="menu-trust-keys"
+                  value="trustkeys"
+                  hidden="hidden"/>
         <menuitem id="menu_recipientStatus_Toolbar"
                   data-l10n-id="menu-manage-keys"
                   value="status"/>

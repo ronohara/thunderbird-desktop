@@ -568,6 +568,24 @@ Enigmail.msg = {
 
       // Resolve all the email addresses if possible.
       await EnigmailKeyRing.getValidKeysForAllRecipients(addresses, detailsObj);
+
+      // Item 89b: a rule can require or forbid encryption, and two rules that
+      // contradict each other are not a preference for the program to decide.
+      // They reach the caller as an error naming the addresses on both sides,
+      // which is what the pre-send refusal and the Key Assistant already act
+      // on -- so a conflict stops the send instead of being resolved silently
+      // in whichever order the recipient list happened to be built.
+      for (const conflict of OpenPGPAlias.conflictsForRecipients(addresses)) {
+        detailsObj.errArray.push({
+          addr: [...conflict.always, ...conflict.never].join(", "),
+          msg: "ProblemRuleConflict",
+        });
+        console.warn(
+          `Conflicting rules for ${conflict.field}: always for ` +
+            `${conflict.always.join(", ")}; never for ` +
+            `${conflict.never.join(", ")}`
+        );
+      }
       //this.autoPgpEncryption = (validKeyList !== null);
     }
 

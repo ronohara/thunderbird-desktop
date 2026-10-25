@@ -1,0 +1,184 @@
+<?xml version="1.0"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+
+<!DOCTYPE html>
+<html
+  xmlns="http://www.w3.org/1999/xhtml"
+  xmlns:xul="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  scrolling="false"
+>
+  <head>
+    <title data-l10n-id="openpgp-rules-title"></title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src chrome:; script-src chrome: 'unsafe-inline' moz-src:; style-src chrome: 'unsafe-inline'"
+    />
+    <link rel="stylesheet" href="chrome://global/skin/global.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/colors.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/variables.css" />
+    <link rel="stylesheet" href="chrome://messenger/skin/themeableDialog.css" />
+
+    <link rel="localization" href="messenger/openpgp/openpgp.ftl" />
+    <script
+      defer="defer"
+      src="chrome://messenger/content/dialogShadowDom.js"
+    ></script>
+    <script
+      defer="defer"
+      src="chrome://openpgp/content/ui/rulesEditor.js"
+    ></script>
+  </head>
+  <body>
+    <xul:dialog id="rulesEditor" buttons="cancel,accept">
+      <p id="rulesIntro" data-l10n-id="openpgp-rules-intro"></p>
+
+      <!-- Shown when the file could not be read. The list is empty in that
+           case, and saving would overwrite what is there, so saving is what
+           this blocks rather than the dialog. -->
+      <div
+        id="rulesError"
+        class="inline-notification-container info-container"
+        collapsed="collapsed"
+      >
+        <img
+          class="notification-image"
+          src="chrome://global/skin/icons/warning.svg"
+          alt=""
+        />
+        <p id="rulesErrorText"></p>
+      </div>
+
+      <xul:listbox
+        id="rulesList"
+        flex="1"
+        height="220"
+        onselect="onRuleSelected()"
+      >
+        <xul:listcols>
+          <xul:listcol flex="2" />
+          <xul:listcol flex="1" />
+          <xul:listcol flex="1" />
+          <xul:listcol flex="1" />
+        </xul:listcols>
+        <xul:listhead>
+          <xul:listheader data-l10n-id="openpgp-rules-column-recipient" />
+          <xul:listheader data-l10n-id="openpgp-rules-column-encrypt" />
+          <xul:listheader data-l10n-id="openpgp-rules-column-sign" />
+          <xul:listheader data-l10n-id="openpgp-rules-column-pgpmime" />
+        </xul:listhead>
+      </xul:listbox>
+
+      <xul:hbox>
+        <xul:button
+          id="rulesAdd"
+          data-l10n-id="openpgp-rules-add"
+          oncommand="addRule()"
+        />
+        <xul:button
+          id="rulesEdit"
+          data-l10n-id="openpgp-rules-edit"
+          oncommand="editRule()"
+          disabled="true"
+        />
+        <xul:button
+          id="rulesRemove"
+          data-l10n-id="openpgp-rules-remove"
+          oncommand="removeRule()"
+          disabled="true"
+        />
+      </xul:hbox>
+
+      <separator class="thin" />
+
+      <!-- The editor proper. Kept in the same dialog rather than a second
+           one: a rule is three settings and a key, and a dialog per rule
+           would be more chrome than content. -->
+      <groupbox id="ruleForm" collapsed="collapsed">
+        <caption>
+          <label id="ruleFormTitle" />
+        </caption>
+
+        <label
+          id="ruleEmailLabel"
+          for="ruleEmail"
+          data-l10n-id="openpgp-rules-email-label"
+          control="ruleEmail"
+        />
+        <textbox id="ruleEmail" />
+
+        <label
+          id="ruleKeysLabel"
+          for="ruleKeys"
+          data-l10n-id="openpgp-rules-keys-label"
+          control="ruleKeys"
+        />
+        <textbox id="ruleKeys" multiline="true" rows="3" />
+        <description data-l10n-id="openpgp-rules-keys-hint" />
+
+        <!-- Three answers, not two. "Leave unchanged" is a real answer and a
+             different one from "no": a checkbox cannot say it, which is the
+             distinction Item 89b needs and this dialog must be able to write.
+             The menulist also tests cleanly, which a three-state checkbox
+             does not. -->
+        <label
+          for="ruleEncrypt"
+          data-l10n-id="openpgp-rules-encrypt"
+          control="ruleEncrypt"
+        />
+        <menulist id="ruleEncrypt">
+          <menupopup>
+            <menuitem value="unset" data-l10n-id="openpgp-rules-unchanged" />
+            <menuitem value="yes" data-l10n-id="openpgp-rules-yes" />
+            <menuitem value="maybe" data-l10n-id="openpgp-rules-maybe" />
+            <menuitem value="no" data-l10n-id="openpgp-rules-no" />
+          </menupopup>
+        </menulist>
+
+        <label
+          for="ruleSign"
+          data-l10n-id="openpgp-rules-sign"
+          control="ruleSign"
+        />
+        <menulist id="ruleSign">
+          <menupopup>
+            <menuitem value="unset" data-l10n-id="openpgp-rules-unchanged" />
+            <menuitem value="yes" data-l10n-id="openpgp-rules-yes" />
+            <menuitem value="maybe" data-l10n-id="openpgp-rules-maybe" />
+            <menuitem value="no" data-l10n-id="openpgp-rules-no" />
+          </menupopup>
+        </menulist>
+
+        <label
+          for="rulePgpMime"
+          data-l10n-id="openpgp-rules-pgpmime"
+          control="rulePgpMime"
+        />
+        <menulist id="rulePgpMime">
+          <menupopup>
+            <menuitem value="unset" data-l10n-id="openpgp-rules-unchanged" />
+            <menuitem value="yes" data-l10n-id="openpgp-rules-yes" />
+            <menuitem value="maybe" data-l10n-id="openpgp-rules-maybe" />
+            <menuitem value="no" data-l10n-id="openpgp-rules-no" />
+          </menupopup>
+        </menulist>
+        <description data-l10n-id="openpgp-rules-unset-hint" />
+
+        <xul:hbox>
+          <xul:button
+            id="ruleSave"
+            data-l10n-id="openpgp-rules-save-rule"
+            oncommand="saveRule()"
+          />
+          <xul:button
+            id="ruleCancel"
+            data-l10n-id="openpgp-rules-cancel-rule"
+            oncommand="cancelRule()"
+          />
+        </xul:hbox>
+      </groupbox>
+    </xul:dialog>
+  </body>
+</html>

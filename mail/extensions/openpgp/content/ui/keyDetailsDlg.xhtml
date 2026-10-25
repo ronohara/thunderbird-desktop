@@ -240,6 +240,13 @@
           <!-- Acceptance Tab -->
           <vbox id="acceptancePanel" flex="1">
             <description id="acceptanceIntro" />
+            <!-- Item 88: the Key Manager calls this same fact "owner trust"
+                 for a key GnuPG holds, so the two dialogs must not read as
+                 two different settings. -->
+            <description
+              id="acceptanceOwnerTrustNote"
+              data-l10n-id="openpgp-acceptance-owner-trust-note"
+            />
             <description id="revocationReasonCode" />
             <description id="revocationReasonReason" />
             <separator class="thin" />

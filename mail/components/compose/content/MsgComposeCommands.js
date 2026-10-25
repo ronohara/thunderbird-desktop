@@ -219,6 +219,18 @@ var gSendEncrypted = false;
 var gEncryptSubject = false;
 
 var gUserTouchedSendEncrypted = false;
+
+/**
+ * Item 91: this message may use keys that the strict policy would refuse.
+ *
+ * Enigmail's "trust the keys of all recipients", which relaxes the
+ * key-acceptance question for one message and nothing else. **It writes
+ * nothing**: the keyring, the acceptance database and the trust database are
+ * untouched, so the user cannot learn that a button in the composer marks a
+ * key trusted forever. It is reset with the window, because it describes this
+ * message rather than a preference.
+ */
+var gTrustKeysForThisMessage = false;
 var gUserTouchedSendSigned = false;
 var gUserTouchedAttachMyPubKey = false;
 var gUserTouchedEncryptSubject = false;
@@ -1982,6 +1994,18 @@ function setSecuritySettings(menu_id) {
     disableEnc || !gSelectedTechnologyIsPGP || !gSendEncrypted
   );
 
+  const trustItem = document.getElementById("menu_trustKeys" + menu_id);
+  if (trustItem) {
+    trustItem.toggleAttribute("checked", gTrustKeysForThisMessage);
+    // Only meaningful when there is a strict policy to relax, which is the
+    // policy's own setting rather than anything about this message.
+    trustItem.hidden = !Services.prefs.getBoolPref(
+      "mail.openpgp.require_trusted_keys",
+      false
+    );
+    trustItem.disabled = !gSelectedTechnologyIsPGP;
+  }
+
   document.getElementById("menu_recipientStatus" + menu_id).disabled =
     disableEnc;
   const manager = document.getElementById("menu_openManager" + menu_id);
@@ -3529,7 +3553,22 @@ async function checkRecipientKeys(recipients) {
       continue;
     }
 
-    if (!keyMetas.some(k => k.readiness == "accepted")) {
+    // Under the strict policy a key the user has not judged reads as
+    // `undecided` rather than `accepted`, and that is the state Item 91's
+    // override relaxes -- for this message only.
+    //
+    // Deliberately not "any key at all": `collected` and `rejected` keys
+    // remain unusable, because the override is about the trust threshold, not
+    // about ignoring a rejection the user made. A rejected key is a decision;
+    // an unjudged one is the absence of a decision, and only the absence is
+    // what a hurried send may proceed without.
+    const usable = keyMetas.some(
+      k =>
+        k.readiness == "accepted" ||
+        (gTrustKeysForThisMessage && k.readiness == "undecided")
+    );
+
+    if (!usable) {
       gEmailsWithMissingKeys.push(addr);
       continue;
     }
@@ -3765,8 +3804,18 @@ async function checkEncryptionState(trigger) {
     "mail.e2ee.auto_enable",
     false
   );
+  const warnUnencryptedPref = Services.prefs.getBoolPref(
+    "mail.e2ee.warn_on_unencrypted_send",
+    false
+  );
 
-  if (!gSendEncrypted && !autoEnablePref && !remindSMime && !remindOpenPGP) {
+  if (
+    !gSendEncrypted &&
+    !autoEnablePref &&
+    !remindSMime &&
+    !remindOpenPGP &&
+    !warnUnencryptedPref
+  ) {
     // No need to check.
     updateEncryptionDependencies();
     updateKeyCertNotifications([]);
@@ -3781,6 +3830,93 @@ async function checkEncryptionState(trigger) {
   const recipients = getEncryptionCompatibleRecipients();
   const checkingCerts = mustCheckRecipientCerts();
   const checkingKeys = mustCheckRecipientKeys();
+
+  /**
+   * Tell the user that this message is about to go out unencrypted, when they
+   * have asked to be told.
+   *
+   * Item 90. Enigmail's "confirm before sending" had five values; this carries
+   * the one that is useful -- warn me when a message leaves in the clear -- and
+   * the pref is a plain on/off, because the other four were about which event
+   * should ask, not about what the user wants to know.
+   *
+   * **Why a notification rather than a modal at send time.** The composer sends
+   * through several paths (the button, the accelerator with its own
+   * confirmation, send-later, send-in-background), and a modal on one of them
+   * would be a second confirmation competing with the one already there. More to
+   * the point, a warning that appears while the message is being written can be
+   * acted on; one that appears as the window is closing cannot.
+   *
+   * **Why it stays quiet when encryption is possible and untouched.** In that
+   * case the existing "encryption is possible" reminder is already saying it,
+   * with a button that turns encryption on -- and two notifications about the
+   * same fact, one of them fixable in a click, is worse than the reminder alone.
+   * This speaks when the reminder cannot: no key exists, or the user turned
+   * encryption off themselves.
+   *
+   * @param {string[]} addressees - The recipients being written to.
+   * @param {boolean} canEncrypt - Whether encryption is possible for all of
+   *   them, from the caller's key and certificate checks.
+   */
+  async function updateUnencryptedWarning(addressees, canEncrypt) {
+    const NOTIFICATION_NAME = "unencryptedSendWarning";
+
+    // Always clear first: the message can become encrypted, or the pref can be
+    // turned off while the window is open, and a stale warning would then be
+    // telling the user something untrue.
+    const existing =
+      gComposeNotification.getNotificationWithValue(NOTIFICATION_NAME);
+    if (existing) {
+      gComposeNotification.removeNotification(existing);
+    }
+
+    if (
+      !Services.prefs.getBoolPref("mail.e2ee.warn_on_unencrypted_send", false)
+    ) {
+      return;
+    }
+    if (!addressees.length) {
+      // Nothing addressed yet, so nothing is about to go anywhere.
+      return;
+    }
+    if (canEncrypt && !gUserTouchedSendEncrypted) {
+      // The "encryption is possible" reminder owns this case.
+      return;
+    }
+
+    let label;
+    if (gUserTouchedSendEncrypted) {
+      // The proximate cause, and the one that is certainly true: whatever the
+      // keys say, this message is in the clear because the user chose it.
+      label = { "l10n-id": "unencrypted-send-warning-user-off" };
+    } else if (gEmailsWithMissingKeys.length) {
+      label =
+        gEmailsWithMissingKeys.length == 1
+          ? {
+              "l10n-id": "unencrypted-send-warning-no-key-single",
+              "l10n-args": { addr: gEmailsWithMissingKeys[0] },
+            }
+          : {
+              "l10n-id": "unencrypted-send-warning-no-key-multi",
+              "l10n-args": { count: gEmailsWithMissingKeys.length },
+            };
+    } else {
+      // No key anywhere and nothing missing in particular: the identity has no
+      // encryption set up, which the settings screen is where to fix.
+      label = { "l10n-id": "unencrypted-send-warning" };
+    }
+
+    await gComposeNotification
+      .appendNotification(
+        NOTIFICATION_NAME,
+        {
+          label,
+          priority: gComposeNotification.PRIORITY_WARNING_MEDIUM,
+        },
+        []
+      )
+      .catch(console.warn);
+  }
 
   async function continueCheckEncryptionStateSub() {
     const canEncryptSMIME =
@@ -3892,6 +4028,10 @@ async function checkEncryptionState(trigger) {
 
     if (!gSendEncrypted) {
       updateKeyCertNotifications([]);
+      updateUnencryptedWarning(
+        recipients,
+        canEncryptSMIME || canEncryptOpenPGP
+      );
       if (recipients.length && (canEncryptSMIME || canEncryptOpenPGP)) {
         let useTech;
         if (canEncryptSMIME && canEncryptOpenPGP) {
@@ -3914,6 +4054,8 @@ async function checkEncryptionState(trigger) {
           : gEmailsWithMissingCerts
       );
       updateEncryptionTechReminder(null);
+      // Encrypted, so there is nothing to warn about.
+      updateUnencryptedWarning([], false);
     }
 
     gCheckEncryptionStateCompletionIsPending = false;
@@ -5915,6 +6057,14 @@ function onEncryptionChoice(value) {
 
     case "sig":
       toggleGlobalSignMessage();
+      break;
+
+    case "trustkeys":
+      // Relaxes the strict policy for this message. Nothing is written: this
+      // flag dies with the window, which is what keeps it from being a trust
+      // decision wearing a composer button.
+      gTrustKeysForThisMessage = !gTrustKeysForThisMessage;
+      checkEncryptionState();
       break;
 
     case "status":

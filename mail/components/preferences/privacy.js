@@ -52,6 +52,7 @@ Preferences.addAll([
   { id: "security.disable_button.openDeviceManager", type: "bool" },
   { id: "security.OCSP.enabled", type: "int" },
   { id: "mail.e2ee.auto_enable", type: "bool" },
+  { id: "mail.openpgp.require_trusted_keys", type: "bool" },
   { id: "mail.e2ee.auto_disable", type: "bool" },
   { id: "mail.e2ee.notify_on_auto_disable", type: "bool" },
 
@@ -146,6 +147,7 @@ var gPrivacyPane = {
     Preferences.addSyncToPrefListener(element, () => this.writeEnableOCSP());
 
     this.initE2eeCheckboxes();
+    this.initE2eeAcceptance();
 
     await DoHConfigController.init();
     this.initDoH();
@@ -596,6 +598,47 @@ var gPrivacyPane = {
     // If allow telemetry is checked, hide the box saying you're no longer
     // allowing it.
     document.getElementById("telemetry-container").hidden = checkbox.checked;
+  },
+
+  /**
+   * Item 87: the key-acceptance choice.
+   *
+   * A radiogroup over one boolean, because the question has two answers and
+   * neither is a default a user should have to infer from an unticked box.
+   * The permissive answer is the pref's default, so an unset pref reads as
+   * "any key that is not rejected" rather than as no answer at all.
+   */
+  initE2eeAcceptance() {
+    const group = document.getElementById("emailE2eeKeyAcceptanceChoice");
+    if (!group) {
+      return;
+    }
+    const trusted = Preferences.get("mail.openpgp.require_trusted_keys").value;
+    group.value = trusted ? "trusted" : "usable";
+  },
+
+  /**
+   * Item 89: open the per-recipient rules editor.
+   *
+   * The dialog edits the file the preference names and writes nothing else,
+   * so there is no state to pass in and none to read back.
+   */
+  editRecipientRules() {
+    window.openDialog(
+      "chrome://openpgp/content/ui/rulesEditor.xhtml",
+      "openpgpRulesEditor",
+      "dialog,modal,centerscreen,resizable",
+      {}
+    );
+  },
+
+  updateE2eeAcceptance() {
+    const group = document.getElementById("emailE2eeKeyAcceptanceChoice");
+    if (!group) {
+      return;
+    }
+    Preferences.get("mail.openpgp.require_trusted_keys").value =
+      group.value == "trusted";
   },
 
   initE2eeCheckboxes() {

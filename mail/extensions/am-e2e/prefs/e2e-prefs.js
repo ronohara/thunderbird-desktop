@@ -51,6 +51,23 @@ pref("mail.identity.default.last_entered_external_gnupg_key_id", "");
 // Enabled by default in this fork, so keys in ~/.gnupg are discovered without a pref change.
 pref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
 
+// Item 90: tell me when a message is about to go out unencrypted.
+//
+// Enigmail's "confirm before sending" had five values; two are enough here --
+// on or off -- because the only question the interface can answer usefully is
+// whether the user wants to be told. Default off: a warning nobody asked for
+// is noise, and the same group already tells them when encryption was turned
+// off automatically, which is a different event.
+pref("mail.e2ee.warn_on_unencrypted_send", false);
+
+// Item 87: must a recipient's key be one the user has judged, or is any
+// usable key enough? Enigmail asked the same question and defaulted to the
+// permissive answer, and this fork keeps that default: a strict default in a
+// build whose users have never signed anybody would refuse every
+// correspondent. The strict answer is opt-in, and it is satisfiable now that
+// owner trust can be set (Item 88).
+pref("mail.openpgp.require_trusted_keys", false);
+
 // When sending an OpenPGP message that is both signed and encrypted,
 // it's possible to use one combined MIME layer, or separate layers.
 pref("mail.openpgp.separate_mime_layers", false);
