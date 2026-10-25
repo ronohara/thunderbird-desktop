@@ -51,4 +51,6 @@ run-if = [
 
 ["browser_dummyRow.js"]
 
+["browser_openPgpExposureNotice.js"]
+
 ["browser_feedBodyDisplay.js"]

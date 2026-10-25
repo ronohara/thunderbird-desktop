@@ -978,3 +978,16 @@ enig-confirm = OpenPGP Confirmation
 
 dlg-button-retry = &Retry
 dlg-button-skip = &Skip
+
+# The OpenPGP exposure notice. Shown when this profile keeps secret material in
+# its own store, which is weaker than a GnuPG keyring. Two populations, two
+# wordings: an internal key is the more serious case, saved credentials the
+# less, and saying "your secrets" to someone with only passwords would be
+# alarming about the wrong thing.
+#
+# Variables:
+# $keys (Number) - How many secret keys live only in this profile.
+openpgp-exposure-internal-key = This profile keeps { $keys } OpenPGP secret key(s) in Thunderbird's own store, which is easier to attack than a GnuPG keyring. Moving your keys to GnuPG protects them with its own, stronger passphrase handling.
+openpgp-exposure-credentials = This profile saves passwords and certificates in Thunderbird's own store. Setting a strong Primary Password protects them with a derivation comparable to GnuPG's.
+openpgp-exposure-not-now = Not now
+openpgp-exposure-dismiss = Do not ask again for now

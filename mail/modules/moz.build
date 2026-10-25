@@ -37,6 +37,7 @@ EXTRA_JS_MODULES += [
     "MozIconUtils.mjs",
     "NotificationSounds.sys.mjs",
     "OpenPgpExposure.sys.mjs",
+    "OpenPgpExposureUI.sys.mjs",
     "PBEIterationFloor.sys.mjs",
     "PBEStoredCount.sys.mjs",
     "PhishingDetector.sys.mjs",

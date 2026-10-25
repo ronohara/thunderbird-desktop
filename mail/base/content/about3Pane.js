@@ -63,6 +63,7 @@ ChromeUtils.defineESModuleGetters(this, {
   MailE10SUtils: "resource:///modules/MailE10SUtils.sys.mjs",
   MailUtils: "resource:///modules/MailUtils.sys.mjs",
   MessageSaver: "moz-src:///comm/mail/modules/MessageSaver.sys.mjs",
+  OpenPgpExposureUI: "resource:///modules/OpenPgpExposureUI.sys.mjs",
   SmartMailboxUtils: "resource:///modules/SmartMailboxUtils.sys.mjs",
   TagUtils: "resource:///modules/TagUtils.sys.mjs",
   UIDensity: "resource:///modules/UIDensity.sys.mjs",
@@ -151,6 +152,26 @@ function updateZoomCommands() {
   }
 }
 
+/**
+ * Shows, or clears, the OpenPGP exposure notice in the thread pane.
+ *
+ * The thread pane rather than the message pane: a user who never opens a
+ * message still needs to know their keys are in the weaker store, and the
+ * thread pane is what the 3-pane view shows before anything is selected.
+ *
+ * @returns {Promise<void>}
+ */
+async function refreshOpenPgpExposureNotice() {
+  const container = document.getElementById("threadPaneNotificationBox");
+  if (!container) {
+    return;
+  }
+  const box = new MozElements.NotificationBox(element =>
+    container.append(element)
+  );
+  await OpenPgpExposureUI.refreshNotice(box);
+}
+
 window.addEventListener("DOMContentLoaded", async event => {
   if (event.target != document) {
     return;
@@ -205,6 +226,13 @@ window.addEventListener("DOMContentLoaded", async event => {
     console.warn(`Couldn't restore state: ${e.message}`, e);
   }
   delete window.openingState;
+
+  // Item 54: tell the user when this profile holds secret material in
+  // Thunderbird's own store. Not awaited -- the notice is advisory, and a slow
+  // or failing keyring read must not hold up the folder selection below.
+  refreshOpenPgpExposureNotice().catch(ex =>
+    console.warn("OpenPGP exposure notice failed", ex)
+  );
 
   // Finally, add the folderTree listener and trigger it. Earlier events
   // (triggered by `folderPane.init` and possibly `restoreState`) are ignored
