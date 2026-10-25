@@ -144,6 +144,25 @@
                     class="first-element"
                     oncommand="openKeyManager()"/>
           </hbox>
+
+          <!--
+            Item 66: the acceptance judgments are stored in this profile and
+            had no way out, so a lost profile lost them. The advice says so
+            plainly, because a user who assumes they are backed up with the
+            keys will find out otherwise at the worst moment.
+          -->
+          <separator class="thin"/>
+          <description flex="1"
+                       data-l10n-id="openpgp-acceptance-export-description"/>
+          <hbox>
+            <button id="openPgpExportAcceptance"
+                    data-l10n-id="openpgp-acceptance-export-button"
+                    class="first-element"
+                    oncommand="exportAcceptance()"/>
+            <button id="openPgpImportAcceptance"
+                    data-l10n-id="openpgp-acceptance-import-button"
+                    oncommand="importAcceptance()"/>
+          </hbox>
         </html:fieldset>
       </html:div>
 

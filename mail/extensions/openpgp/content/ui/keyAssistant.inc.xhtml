@@ -85,6 +85,20 @@
              data-l10n-id="openpgp-key-assistant-signing-subkey-label"
              hidden="hidden"/>
       <select id="keyAssistantSigningSubkeyChoice" hidden="hidden"/>
+
+      <!--
+        The identity's keys, in the order the user set. Shown only when there
+        is more than one, because a single key has no order to state. The first
+        entry that can be used is the one that signs, so the list is the
+        preference and not merely a record of what the identity holds.
+      -->
+      <section id="keyAssistantSigningKeyOrder" hidden="hidden">
+        <p class="font-bold"
+           data-l10n-id="openpgp-key-assistant-signing-key-order-label"/>
+        <p class="tip-caption"
+           data-l10n-id="openpgp-key-assistant-signing-key-order-caption"/>
+        <ul id="keyAssistantSigningKeyOrderList" class="reset-list"/>
+      </section>
     </section>
 
     <!-- Issues section. -->

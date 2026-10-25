@@ -35,6 +35,9 @@ var { EnigmailEncryption } = ChromeUtils.importESModule(
 var { EnigmailMsgRead } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/msgRead.sys.mjs"
 );
+var { firstUsableKey } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/identityKeys.sys.mjs"
+);
 var { EnigmailMimeEncrypt } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/mimeEncrypt.sys.mjs"
 );
@@ -641,8 +644,33 @@ Enigmail.msg = {
     gMsgCompose.compFields.setHeader("x-enigmail-draft-status", draftStatus);
   },
 
+  /**
+   * The key this identity will sign with, as "0x<key id>".
+   *
+   * Since Item 65 an identity may hold several keys in a stated order, and the
+   * rule is to read that order rather than compute one: the first entry that
+   * can actually be used is the answer, and a later entry never displaces an
+   * earlier one by being newer or better. Skipping an unusable entry is not a
+   * ranking -- it is the difference between "can this be used" and "which is
+   * better" -- and only the user answers the second question.
+   *
+   * @returns {?string} The signing key, or null when the identity has no key
+   *   that can be used. The callers turn that into the "no own key" alert
+   *   rather than sending unsigned under a signature the user expected.
+   */
   getSenderUserId() {
-    const keyId = gCurrentIdentity?.getUnicharAttribute("openpgp_key_id");
+    const identity = gCurrentIdentity;
+    if (!identity) {
+      return null;
+    }
+    const key = firstUsableKey(identity, "sign");
+    if (key) {
+      return "0x" + key.keyId;
+    }
+    // No usable key. Fall back to whatever the identity names, so that the
+    // existing error messages still name the key the user configured rather
+    // than saying there is none.
+    const keyId = identity.getUnicharAttribute("openpgp_key_id");
     return keyId ? "0x" + keyId : null;
   },
 

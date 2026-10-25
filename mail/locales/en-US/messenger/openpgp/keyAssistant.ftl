@@ -185,6 +185,16 @@ openpgp-key-assistant-signing-subkey-missing = Key { $fingerprint }, which you c
 # The named choice, matching GnuPG's --local-user / --default-key. Shown only
 # for a key the internal engine holds.
 openpgp-key-assistant-signing-subkey-label = Signing subkey
+
+# The identity's keys, in the user's order. Shown only when there is more than
+# one, because a single key has no order to state.
+openpgp-key-assistant-signing-key-order-label = Keys for this identity, in order of preference
+openpgp-key-assistant-signing-key-order-caption = The first key that can be used signs this message. An expired, revoked or unusable key is passed over, and the next one is used.
+openpgp-key-assistant-signing-key-order-active = Signs now
+openpgp-key-assistant-signing-key-order-move-up =
+    .label = Move up
+openpgp-key-assistant-signing-key-order-move-down =
+    .label = Move down
 openpgp-key-assistant-signing-subkey-automatic = Automatic (newest usable subkey)
 
 # Variables:

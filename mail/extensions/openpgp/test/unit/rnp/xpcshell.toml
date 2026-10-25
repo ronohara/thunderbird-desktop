@@ -6,6 +6,8 @@ support-files = [
 ]
 tags = ["openpgp"]
 
+["test_acceptanceExport.js"]
+
 ["test_addSubkey.js"]
 
 ["test_alias.js"]
@@ -26,9 +28,14 @@ skip-if = ["os != 'linux'"]
 
 ["test_gnupgKeyStructure.js"]
 
+["test_identityKeyList.js"]
+
 ["test_integrityProtection.js"]
 
 ["test_mimeTree.js"]
+
+["test_nothingDecidedSilently.js"]
+run-sequentially = true  # queries the profile-global keyring and acceptance store
 
 # ML-KEM requires the experimental RNP library, which is only
 # distributed in nightly builds.

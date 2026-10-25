@@ -544,6 +544,22 @@ openpgp-manager-button =
     .label = OpenPGP Key Manager
     .accesskey = K
 
+# Item 66: the acceptance judgments are stored in this profile only. Saying so
+# plainly is part of the item -- a user who assumes they travel with the keys
+# finds out otherwise at the worst possible moment.
+openpgp-acceptance-export-description = Your decisions about which keys to trust are stored in this profile only. They are not part of a key backup and do not follow you to another computer unless you export them.
+openpgp-acceptance-export-button =
+    .label = Export Key Trust Decisions…
+openpgp-acceptance-import-button =
+    .label = Import Key Trust Decisions…
+openpgp-acceptance-export-title = Export key trust decisions
+openpgp-acceptance-import-title = Import key trust decisions
+openpgp-acceptance-file-filter = Key trust decisions
+openpgp-acceptance-export-done = Your key trust decisions have been saved.
+openpgp-acceptance-export-failed = The key trust decisions could not be saved: { $error }
+openpgp-acceptance-import-done = Imported: { $added } added, { $replaced } replaced, { $kept } kept, { $skipped } skipped. A decision already made on this computer is never removed by an import.
+openpgp-acceptance-import-failed = The key trust decisions could not be imported: { $error }
+
 openpgp-key-remove-external =
     .label = Remove External Key ID
     .accesskey = E

@@ -19,6 +19,9 @@ ChromeUtils.defineESModuleGetters(this, {
   EnigmailKeyRing: "chrome://openpgp/content/modules/keyRing.sys.mjs",
   GPGME: "chrome://openpgp/content/modules/GPGME.sys.mjs",
   KeyLookupHelper: "chrome://openpgp/content/modules/keyLookupHelper.sys.mjs",
+  firstUsableKey: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
+  getKeyList: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
+  moveKey: "chrome://openpgp/content/modules/identityKeys.sys.mjs",
   OpenPGPAlias: "chrome://openpgp/content/modules/OpenPGPAlias.sys.mjs",
   PgpSqliteDb2: "chrome://openpgp/content/modules/sqliteDb.sys.mjs",
   // FIXME: using this creates a conflict with another file where this symbol
@@ -208,6 +211,10 @@ var gKeyAssistant = {
     const source = document.getElementById("keyAssistantSigningKeySource");
     section.hidden = true;
     this.hideSigningSubkeyChoice();
+    // Hidden with the rest: an identity that has switched to the external
+    // keyring must not keep showing the internal key list from before, which
+    // would describe a choice the engine is no longer making.
+    this.hideIdentityKeyOrder();
 
     const identity = gCurrentIdentity;
     if (!identity?.email) {
@@ -264,14 +271,19 @@ var gKeyAssistant = {
    * @param {Element} section - The whole section.
    */
   async fillInternalSigningKey(identity, value, source, section) {
-    const keyId = identity.getUnicharAttribute("openpgp_key_id");
-    if (!keyId) {
-      return;
-    }
-    const key = EnigmailKeyRing.getKeyById(keyId);
+    // The engine reads the identity's ordered key list, so the line has to
+    // report what that rule produces rather than what `openpgp_key_id` says:
+    // with two keys those are the same only while the first one is usable.
+    const key = firstUsableKey(identity, "sign");
     if (!key) {
+      this.fillIdentityKeyOrder(identity);
       return;
     }
+
+    // Offered whenever the identity holds more than one key, because that is
+    // when the order is a preference rather than a restatement of the only
+    // answer available.
+    this.fillIdentityKeyOrder(identity);
 
     // A revoked or expired subkey cannot sign, so it is not a candidate.
     // Listing one would offer a choice that fails at send time.
@@ -394,6 +406,91 @@ var gKeyAssistant = {
 
     chooser.hidden = false;
     label.hidden = false;
+  },
+
+  /**
+   * Show the identity's keys in order, so the preference is visible where it
+   * is used and can be changed without leaving the composer.
+   *
+   * Only shown when there is more than one key: an identity with one key has
+   * no order to state, and a list of one would be a control that can only
+   * displease. The first usable entry is marked, because that is the rule the
+   * engine applies -- marking the first entry instead would claim a preference
+   * the user does not get when that key has expired.
+   *
+   * @param {nsIMsgIdentity} identity - The composer's identity.
+   */
+  fillIdentityKeyOrder(identity) {
+    const section = document.getElementById("keyAssistantSigningKeyOrder");
+    const list = document.getElementById("keyAssistantSigningKeyOrderList");
+    if (!section || !list) {
+      return;
+    }
+    list.replaceChildren();
+
+    const keys = getKeyList(identity);
+    if (keys.length < 2) {
+      section.hidden = true;
+      return;
+    }
+
+    const chosen = firstUsableKey(identity, "sign");
+    for (const [index, fpr] of keys.entries()) {
+      const key = EnigmailKeyRing.getKeyById(fpr);
+      const item = document.createElement("li");
+      item.className = "key-assistant-key-order-item";
+
+      const label = document.createElement("span");
+      label.textContent = key ? `${key.keyId} — ${key.created}` : fpr;
+      item.appendChild(label);
+
+      if (chosen && chosen.fpr.toUpperCase() == fpr.toUpperCase()) {
+        const badge = document.createElement("span");
+        badge.className = "tip-caption";
+        document.l10n.setAttributes(
+          badge,
+          "openpgp-key-assistant-signing-key-order-active"
+        );
+        item.appendChild(badge);
+      }
+
+      // Arrows rather than drag: a drag cannot be operated from a keyboard,
+      // and this dialog already asks the user to make a decision by reading.
+      const up = document.createElement("button");
+      document.l10n.setAttributes(
+        up,
+        "openpgp-key-assistant-signing-key-order-move-up"
+      );
+      up.disabled = index == 0;
+      up.addEventListener("click", () => {
+        moveKey(identity, fpr, -1);
+        this.fillSigningKey();
+      });
+      item.appendChild(up);
+
+      const down = document.createElement("button");
+      document.l10n.setAttributes(
+        down,
+        "openpgp-key-assistant-signing-key-order-move-down"
+      );
+      down.disabled = index == keys.length - 1;
+      down.addEventListener("click", () => {
+        moveKey(identity, fpr, 1);
+        this.fillSigningKey();
+      });
+      item.appendChild(down);
+
+      list.appendChild(item);
+    }
+
+    section.hidden = false;
+  },
+
+  hideIdentityKeyOrder() {
+    const section = document.getElementById("keyAssistantSigningKeyOrder");
+    if (section) {
+      section.hidden = true;
+    }
   },
 
   hideSigningSubkeyChoice() {

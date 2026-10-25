@@ -6,6 +6,7 @@
 openpgp.jar:
 % content openpgp %content/openpgp/
   content/openpgp/BondOpenPGP.sys.mjs              (content/BondOpenPGP.sys.mjs)
+  content/openpgp/modules/acceptanceExport.sys.mjs (content/modules/acceptanceExport.sys.mjs)
   content/openpgp/modules/armor.sys.mjs            (content/modules/armor.sys.mjs)
   content/openpgp/modules/CollectedKeysDB.sys.mjs  (content/modules/CollectedKeysDB.sys.mjs)
   content/openpgp/modules/constants.sys.mjs        (content/modules/constants.sys.mjs)
@@ -21,6 +22,7 @@ openpgp.jar:
   content/openpgp/modules/GPGME.sys.mjs            (content/modules/GPGME.sys.mjs)
   content/openpgp/modules/GPGMELib.sys.mjs         (content/modules/GPGMELib.sys.mjs)
   content/openpgp/modules/gnupgAgent.sys.mjs       (content/modules/gnupgAgent.sys.mjs)
+  content/openpgp/modules/identityKeys.sys.mjs     (content/modules/identityKeys.sys.mjs)
   content/openpgp/modules/key.sys.mjs              (content/modules/key.sys.mjs)
   content/openpgp/modules/keyLookupHelper.sys.mjs  (content/modules/keyLookupHelper.sys.mjs)
   content/openpgp/modules/keyObj.sys.mjs           (content/modules/keyObj.sys.mjs)

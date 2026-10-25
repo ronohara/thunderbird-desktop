@@ -21,6 +21,12 @@ var { EnigmailDialog } = ChromeUtils.importESModule(
 var { EnigmailKeyRing } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/keyRing.sys.mjs"
 );
+var { setKeyList } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/identityKeys.sys.mjs"
+);
+var acceptanceExport = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/acceptanceExport.sys.mjs"
+);
 var { EnigmailKeyServer } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/keyserver.sys.mjs"
 );
@@ -346,7 +352,9 @@ async function offerGnuPGKeyIfFirstUse(result) {
   );
 
   if (button == 0) {
-    gIdentity.setUnicharAttribute("openpgp_key_id", offeredKeyId);
+    // Item 65: the list is authoritative, so choosing a key here replaces the
+    // order with this single key rather than leaving a stale order behind.
+    setKeyList(gIdentity, [offeredKeyId]);
     gIdentity.setUnicharAttribute(
       "last_entered_external_gnupg_key_id",
       offeredKeyId
@@ -1388,6 +1396,133 @@ function openDeviceManager() {
 }
 
 /**
+ * Save the acceptance judgments to a file the user chooses.
+ *
+ * Item 66: the judgments are stored per profile, so this is the only way they
+ * survive a lost profile or travel to another machine. The file is JSON so it
+ * can be read before it is imported -- a trust store that only the program can
+ * read is one the user cannot check.
+ */
+async function exportAcceptance() {
+  const file = await chooseAcceptanceFile(true);
+  if (!file) {
+    return;
+  }
+  try {
+    const text = await acceptanceExport.exportAcceptanceToJSON();
+    await IOUtils.writeUTF8(file.path, text);
+  } catch (ex) {
+    console.error("Exporting the acceptance judgments failed", ex);
+    Services.prompt.alert(
+      window,
+      null,
+      await document.l10n.formatValue("openpgp-acceptance-export-failed", {
+        error: ex.message,
+      })
+    );
+    return;
+  }
+  Services.prompt.alert(
+    window,
+    null,
+    await document.l10n.formatValue("openpgp-acceptance-export-done")
+  );
+}
+
+/**
+ * Merge the acceptance judgments from a file the user chooses.
+ *
+ * The merge rule is stated in the confirmation rather than applied silently:
+ * a local judgment is never removed, and a fingerprint judged differently on
+ * the two sides keeps this machine's answer. Saying so before the import is
+ * what stops "imported" being read as "replaced".
+ */
+async function importAcceptance() {
+  const file = await chooseAcceptanceFile(false);
+  if (!file) {
+    return;
+  }
+  let text;
+  try {
+    text = await IOUtils.readUTF8(file.path);
+  } catch (ex) {
+    Services.prompt.alert(
+      window,
+      null,
+      await document.l10n.formatValue("openpgp-acceptance-import-failed", {
+        error: ex.message,
+      })
+    );
+    return;
+  }
+
+  let result;
+  try {
+    result = await acceptanceExport.importAcceptanceFromJSON(text, {
+      onConflict: "keep-local",
+    });
+  } catch (ex) {
+    Services.prompt.alert(
+      window,
+      null,
+      await document.l10n.formatValue("openpgp-acceptance-import-failed", {
+        error: ex.message,
+      })
+    );
+    return;
+  }
+
+  Services.prompt.alert(
+    window,
+    null,
+    await document.l10n.formatValue("openpgp-acceptance-import-done", {
+      added: result.added,
+      replaced: result.replaced,
+      kept: result.kept + result.conflicts,
+      skipped: result.skipped,
+    })
+  );
+  reloadOpenPgpUI();
+}
+
+/**
+ * Ask for a file, with a JSON filter and a sensible default name.
+ *
+ * @param {boolean} forWriting
+ * @returns {?nsIFile} The chosen file, or null if the user cancelled.
+ */
+async function chooseAcceptanceFile(forWriting) {
+  const picker = Cc["@mozilla.org/filepicker;1"].createInstance(
+    Ci.nsIFilePicker
+  );
+  const [title, filterName] = await document.l10n.formatValues([
+    {
+      id: forWriting
+        ? "openpgp-acceptance-export-title"
+        : "openpgp-acceptance-import-title",
+    },
+    { id: "openpgp-acceptance-file-filter" },
+  ]);
+  picker.init(
+    window.browsingContext,
+    title,
+    forWriting ? Ci.nsIFilePicker.modeSave : Ci.nsIFilePicker.modeOpen
+  );
+  picker.appendFilter(filterName, "*.json");
+  picker.defaultExtension = "json";
+  if (forWriting) {
+    picker.defaultString = "openpgp-acceptance.json";
+  }
+  // The picker is opened asynchronously and answered through a callback; the
+  // codebase's own idiom for awaiting it is this wrapper.
+  const rv = await new Promise(resolve => picker.open(resolve));
+  if (rv == Ci.nsIFilePicker.returnCancel) {
+    return null;
+  }
+  return picker.file;
+}
+
+/**
  * Open the OpenPGP Key Manager.
  */
 function openKeyManager() {
@@ -1469,8 +1604,12 @@ function useOpenPGPKey(keyId) {
   // Rebuild the UI so that any new keys are listed.
   gKeyId = keyId?.toUpperCase() || "";
 
-  // Update the identity with the key obtained from the key wizard.
-  gIdentity.setUnicharAttribute("openpgp_key_id", gKeyId);
+  // Update the identity with the key obtained from the key wizard. Choosing a
+  // key replaces the order rather than adding to it: a settings control that
+  // offers one key is a statement that this is the key, not a preference among
+  // several, and guessing that the others should keep their places would make
+  // the order depend on which control was used.
+  setKeyList(gIdentity, gKeyId ? [gKeyId] : []);
 
   if (
     gKeyId &&

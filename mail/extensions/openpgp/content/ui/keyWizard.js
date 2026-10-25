@@ -22,6 +22,9 @@ var { EnigmailKey } = ChromeUtils.importESModule(
 var { EnigmailKeyRing } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/keyRing.sys.mjs"
 );
+var { setKeyList } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/identityKeys.sys.mjs"
+);
 var { EnigmailWindows } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/windows.sys.mjs"
 );
@@ -1387,7 +1390,11 @@ async function openPgpExternalComplete() {
   }
 
   gIdentity.setBoolAttribute("is_gnupg_key_id", true);
-  gIdentity.setUnicharAttribute("openpgp_key_id", keyId);
+  // Item 65: the ordered list is authoritative and `openpgp_key_id` follows its
+  // first entry. The wizard is naming the identity's key, so the list becomes
+  // that one key -- set through the list rather than beside it, or the two
+  // would disagree the moment the user reordered anything.
+  setKeyList(gIdentity, [keyId]);
 
   window.arguments[0].okExternalCallback(keyId);
   window.close();
