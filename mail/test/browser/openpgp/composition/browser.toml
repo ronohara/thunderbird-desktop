@@ -20,6 +20,8 @@ prefs = [
 subsuite = "thunderbird"
 support-files = ["../data/**"]
 
+["browser_composerKeyChoice.js"]
+
 ["browser_composeEncrypted.js"]
 
 ["browser_composeSigned.js"]
