@@ -33,6 +33,8 @@ support-files = ["files/complete.oga"]
 
 ["browser_openPreferences.js"]
 
+["browser_primaryPasswordPolicy.js"]
+
 ["browser_privacy.js"]
 
 ["browser_qrCodeWizard.js"]
