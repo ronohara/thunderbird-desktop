@@ -3619,18 +3619,33 @@ export var RNP = {
       passwords: [],
     };
 
-    // Abort if we see keys that we don't support.
-    // TODO: In the future, the decision whether a key is supported
-    // should be based on the result of an API call that queries the
-    // version of the key. As of today, the newest version we support is
-    // v4 with a fingerprint length of 40 characters. All newer
-    // specifications known at the time of writing this code use longer
-    // fingerprints.
+    // Abort if we see keys that we don't support -- decided on the key's
+    // version, not on the length of its fingerprint.
+    //
+    // The length was a proxy, and it was a wrong one in both directions. It
+    // refused v5, whose fingerprint is 32 bytes: librnp handles v5
+    // unconditionally (`Fingerprint::size_valid` accepts 16, 20 and 32), so the
+    // refusal was Thunderbird's own and forced a v5 user to generate a v4 key
+    // instead -- with a SHA-1 fingerprint where v5 uses SHA-256. And it would
+    // have *accepted* a v6 key if one had a 40-character fingerprint, which it
+    // does not, but the guard was asking about the representation rather than
+    // about the thing that matters.
+    //
+    // v5 is accepted. v6 is still refused, and for a different reason:
+    // librnp needs ENABLE_CRYPTO_REFRESH (the Botan 3 backend) for it, and
+    // `third_party/rnp/moz.build` does not set it -- so a v6 key would parse
+    // and then fail unpredictably rather than being refused cleanly.
+    //
+    // The comment that stood here asked for exactly this and was left as a TODO;
+    // `rnp_key_get_version` was already bound, and `addKeyAttributes()` already
+    // stores the result on the key object.
+    const MAX_SUPPORTED_VERSION = 5;
     for (const k of keys) {
-      if (k.fpr.length > 40) {
+      if (k.version > MAX_SUPPORTED_VERSION) {
         RNPLib.rnp_ffi_destroy(tempFFI);
         lazy.log.warn(
-          `Cannot import OpenPGP key with fingerprint ${k.fpr} because it is based on an unsupported specification.`
+          `Cannot import OpenPGP key with fingerprint ${k.fpr}: version ` +
+            `${k.version} is newer than the supported ${MAX_SUPPORTED_VERSION}.`
         );
         result.errorMsg = `Found unsupported key: ${k.fpr}`;
         return result;
@@ -4246,7 +4261,11 @@ export var RNP = {
     let type = null;
     if (id.length == 16) {
       type = "keyid";
-    } else if (id.length == 40 || id.length == 32) {
+    } else if (id.length == 40 || id.length == 32 || id.length == 64) {
+      // 16, 20 and 32 bytes: v4, v3 and v5. Folded into the same branch rather
+      // than given separate ones, because the length is only being used to tell
+      // a key ID from a fingerprint here -- which version it is belongs to the
+      // import guard, where it is asked of the key itself.
       type = "fingerprint";
     } else {
       throw new Error("key/fingerprint identifier of unexpected length: " + id);

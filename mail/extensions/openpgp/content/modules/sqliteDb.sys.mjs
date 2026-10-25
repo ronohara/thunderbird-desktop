@@ -63,7 +63,14 @@ export var PgpSqliteDb2 = {
    */
   async getFingerprintAcceptance(conn, fingerprint) {
     // 40 is for modern fingerprints, 32 for older fingerprints.
-    if (fingerprint.length != 40 && fingerprint.length != 32) {
+    // 16, 20 and 32 bytes: v3, v4 and v5. The acceptance table stores the
+    // fingerprint as text and has no length constraint, so widening this costs
+    // nothing on disk -- it refused v5 before the key could reach it.
+    if (
+      fingerprint.length != 40 &&
+      fingerprint.length != 32 &&
+      fingerprint.length != 64
+    ) {
       throw new Error(`Invalid fingerprint: ${fingerprint}`);
     }
 
