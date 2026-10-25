@@ -433,10 +433,51 @@ add_task(async function row3_existingProfilesStillOpen() {
     "the store still round-trips after the upgrade"
   );
 
+  // The second half of row 3 is a rollback claim: a profile re-encrypted at
+  // the floor must still open with the OLD binary. Testing "the old binary"
+  // literally needs a second checkout, but its relevant behaviour is one
+  // property and it is reachable here: an older NSS has a 10,000 floor, so a
+  // database stored at 1,010,000 is ABOVE its minimum and it will not attempt
+  // an upgrade -- it derives with the count the database already carries.
+  //
+  // "No floor in force" is that situation exactly. So this asserts the
+  // property the rollback depends on: with the floor removed, the store still
+  // opens, still carries 1,010,000, and is not re-encrypted downward.
+  // Both the preference and the variable: `applyPBEIterationFloor()` leaves an
+  // inherited variable alone by design, so clearing the preference is not
+  // enough to put this process in the no-floor state.
+  Services.prefs.clearUserPref(FLOOR_PREF);
+  applyPBEIterationFloor();
+  Services.env.set(ENV_VAR, "");
+  Assert.equal(
+    currentPBEIterationFloor(),
+    0,
+    "no floor is in force, which is the old binary's situation"
+  );
+
+  const stillStored = await readStoredIterationCount(profileDir());
+  Assert.equal(
+    stillStored,
+    TARGET_ITERATIONS,
+    `the count must not be lowered by a build without the floor, got ${stillStored}`
+  );
+
+  const reopened = Cc["@mozilla.org/security/sdr;1"].getService(
+    Ci.nsISecretDecoderRing
+  );
+  Assert.equal(
+    reopened.decryptString(reopened.encryptString("rollback round trip")),
+    "rollback round trip",
+    "and the store must still open and round-trip without a floor"
+  );
+
   info(
-    "NOT COVERED HERE — the second half of row 3: that a profile " +
-      "re-encrypted at the floor still opens with the OLD binary. That is a " +
-      "statement about two builds, and this is one process on one build. " +
-      "It is a rollback-safety claim and needs a second checkout to test."
+    "Row 3's second half is covered by proxy: the old binary's relevant " +
+      "behaviour is that its 10,000 floor is below a 1,010,000 stored count, so " +
+      "it does not re-encrypt and derives with the stored value. 'No floor in " +
+      "force' is that same path. What a proxy cannot prove is that an older " +
+      "NSS build has no other incompatibility with a newer database -- that " +
+      "needs the second checkout, and is recorded as outstanding rather than " +
+      "claimed."
   );
 });
