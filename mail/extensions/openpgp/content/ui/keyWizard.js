@@ -1049,6 +1049,26 @@ async function openPgpImportStart() {
     return;
   }
 
+  // Item 73 / D7: the same refusal-with-a-route the key-generation path makes.
+  // A secret key imported here is protected by the SDR key, and without a
+  // Primary Password that key is stretched once, so the private key is readable
+  // by anyone who can open the profile. enforcePrimaryPassword() opens the
+  // change-password dialog and reports whether the user complied, so the route
+  // forward is the refusal rather than a dead end.
+  //
+  // Before this, the import path had no check at all -- it wrote secret
+  // material whatever the policy said, which is the asymmetry Item 53's own
+  // audit named and this item closes.
+  if (!enforcePrimaryPassword(window)) {
+    document.l10n.setAttributes(
+      await addImportWarningNotification(),
+      "openpgp-import-error-primary-password"
+    );
+    // The files stay selected and the list stays populated, so the user can
+    // set a password and press Continue again rather than re-picking them.
+    return;
+  }
+
   kGenerating = true;
 
   // Show the overlay.

@@ -119,6 +119,11 @@ openpgp-keygen-error-failed = OpenPGP Key generation unexpectedly failed
 # to protect the new key and the user cancelled setting one.
 openpgp-keygen-error-primary-password = A Primary Password is required before generating a key. The new key would otherwise be readable by anyone who can open this profile.
 
+# Item 73 / D7. The import path's equivalent of the message above. The refusal
+# is the route: the change-password dialog has already been offered by the time
+# this is shown, so the sentence says what to do rather than only what failed.
+openpgp-import-error-primary-password = A Primary Password is required before importing a secret key. The key would otherwise be readable by anyone who can open this profile. Set one and press Continue again.
+
 #   $key (String) - the ID of the newly generated OpenPGP key
 openpgp-keygen-error-revocation = OpenPGP Key created successfully, but failed to obtain revocation for key { $key }
 
