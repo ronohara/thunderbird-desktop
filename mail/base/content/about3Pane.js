@@ -40,6 +40,13 @@ var { FeedUtils } = ChromeUtils.importESModule(
   "resource:///modules/FeedUtils.sys.mjs"
 );
 
+// A direct import rather than a `defineESModuleGetters` entry, because that is
+// the form that works here: as a lazy getter this resolved to `undefined` and
+// the exposure notice threw on first use. Fourth time in this tree.
+var OpenPgpExposureUI = ChromeUtils.importESModule(
+  "resource:///modules/OpenPgpExposureUI.sys.mjs"
+);
+
 ChromeUtils.defineESModuleGetters(
   this,
   {
@@ -63,7 +70,6 @@ ChromeUtils.defineESModuleGetters(this, {
   MailE10SUtils: "resource:///modules/MailE10SUtils.sys.mjs",
   MailUtils: "resource:///modules/MailUtils.sys.mjs",
   MessageSaver: "moz-src:///comm/mail/modules/MessageSaver.sys.mjs",
-  OpenPgpExposureUI: "resource:///modules/OpenPgpExposureUI.sys.mjs",
   SmartMailboxUtils: "resource:///modules/SmartMailboxUtils.sys.mjs",
   TagUtils: "resource:///modules/TagUtils.sys.mjs",
   UIDensity: "resource:///modules/UIDensity.sys.mjs",

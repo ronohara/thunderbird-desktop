@@ -20,6 +20,8 @@ subsuite = "thunderbird"
 support-files = ["data/**"]
 tags = ["openpgp"]
 
+["browser_acceptanceExport.js"]
+
 ["browser_collectKeys.js"]
 
 ["browser_encryptedRemoteContentFromFile.js"]
