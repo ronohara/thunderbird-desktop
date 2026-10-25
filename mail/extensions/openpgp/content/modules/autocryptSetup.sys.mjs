@@ -33,8 +33,15 @@
  * property that stops a message carrying a secret key from being sent by
  * accident. Nothing in this module sends anything; it builds a string, and the
  * caller decides to send it.
+ *
+ * **Finding it again is the same feature read backwards (Item 99a).** The
+ * message is a self-addressed copy of the user's key, so a device that has lost
+ * its key can look for one in the mailbox. That walk is bounded and
+ * user-initiated -- see `findSetupMessages()` for why both of those are
+ * properties of the item rather than of this implementation.
  */
 
+import { MailServices } from "resource:///modules/MailServices.sys.mjs";
 import { RNP } from "chrome://openpgp/content/modules/RNP.sys.mjs";
 import { EnigmailMime } from "chrome://openpgp/content/modules/mime.sys.mjs";
 import { SetupCode } from "chrome://openpgp/content/modules/setupCode.sys.mjs";
@@ -186,23 +193,11 @@ export const AutocryptSetup = {
    * @returns {{state: string, reason?: string, armour?: string}}
    */
   classify(mimePart) {
-    if (typeof mimePart != "string" || !mimePart.length) {
+    const value = this._setupMarkerValue(mimePart);
+
+    if (value == null) {
       return { state: "notASetupMessage" };
     }
-
-    // The marker is a MIME header, so it appears before the first blank line.
-    const headerBlock = mimePart.split(/\r?\n\r?\n/)[0] ?? "";
-    const marker = headerBlock
-      .split(/\r?\n/)
-      .find(l => /^autocrypt-setup-message\s*:/i.test(l));
-
-    if (!marker) {
-      return { state: "notASetupMessage" };
-    }
-    const value = marker
-      .slice(marker.indexOf(":") + 1)
-      .trim()
-      .toLowerCase();
     if (value != "v1") {
       // A version this implementation does not know. Ignored, deliberately:
       // reporting it would make every future format produce a dialog here.
@@ -226,6 +221,42 @@ export const AutocryptSetup = {
     }
 
     return { state: "ok", armour };
+  },
+
+  /**
+   * The version the first `Autocrypt-Setup-Message` header names, lowercased.
+   *
+   * Null when there is no such header at all, which is a different fact from a
+   * version this build does not know -- and the two are kept apart because
+   * they have different behaviour: no header is nothing, a `v2` header is a
+   * message from the future that must be left alone.
+   *
+   * Used by `classify()` and by the scan, so that "is this a setup message" is
+   * answered in one place and the two cannot drift. Both callers pass text
+   * whose *first* header block is the one to read: the part for `classify()`, a
+   * streamed header block for the scan.
+   *
+   * @param {?string} text
+   * @returns {?string}
+   */
+  _setupMarkerValue(text) {
+    if (typeof text != "string" || !text.length) {
+      return null;
+    }
+
+    // The marker is a MIME header, so it appears before the first blank line.
+    const headerBlock = text.split(/\r?\n\r?\n/)[0] ?? "";
+    const marker = headerBlock
+      .split(/\r?\n/)
+      .find(l => /^autocrypt-setup-message\s*:/i.test(l));
+
+    if (!marker) {
+      return null;
+    }
+    return marker
+      .slice(marker.indexOf(":") + 1)
+      .trim()
+      .toLowerCase();
   },
 
   /**
@@ -454,6 +485,245 @@ export const AutocryptSetup = {
       rules.push(rule);
     }
     await OpenPGPAlias.writeRules(rules);
+  },
+
+  /**
+   * How far back the scan looks, in seconds: thirty days.
+   *
+   * The bound is deliberate and it is the whole performance story, not a
+   * safety margin. A setup message exists because a device was lost or
+   * replaced, so a months-old hit is almost certainly an old backup whose key
+   * has since been superseded -- and a bound is what keeps a folder walk
+   * proportional rather than open-ended. With newest-first enumeration, a
+   * folder whose newest message is already older than the window costs one
+   * header read. Enigmail used the same number (`autoSetup.jsm`, 2592000).
+   */
+  MAX_AGE_SECONDS: 2592000,
+
+  /**
+   * Why a folder is not worth scanning, or null when it is.
+   *
+   * The list is Enigmail's, and each entry has a reason rather than being a
+   * habit of the reference implementation:
+   *
+   *   - **Junk and Trash** are where a message goes when it is not to be
+   *     trusted or not to be kept; scanning them finds copies the user has
+   *     already rejected.
+   *   - **NNTP** carries no self-addressed mail: a newsgroup post is not a
+   *     message the user sent to themself.
+   *   - **Local Folders** is the account with no server, and Enigmail skipped
+   *     it. Following it keeps this build's answer the same as the reference
+   *     implementation's, which is what D19 asks for.
+   *   - **Virtual** folders are saved searches: a view over folders this walk
+   *     already visits, so a hit there is a second read of the same message.
+   *     Not in Enigmail's list, which predated this build's folder model; the
+   *     reason is the same kind as the others, so it is listed here rather
+   *     than left as an accident of folder enumeration.
+   *
+   * Returning the reason rather than a boolean is what makes the skip
+   * assertable: a test can say which rule applied, not merely that nothing
+   * was found.
+   *
+   * @param {nsIMsgFolder} folder
+   * @returns {?string} One of `junk`, `trash`, `virtual`, `nntp`,
+   *   `local-folders`, or null for a folder worth scanning.
+   */
+  skipReason(folder) {
+    if (folder.getFlag(Ci.nsMsgFolderFlags.Junk)) {
+      return "junk";
+    }
+    if (folder.getFlag(Ci.nsMsgFolderFlags.Trash)) {
+      return "trash";
+    }
+    if (folder.getFlag(Ci.nsMsgFolderFlags.Virtual)) {
+      return "virtual";
+    }
+
+    const type = folder.server?.type;
+    if (type == "nntp") {
+      return "nntp";
+    }
+    if (type == "none") {
+      return "local-folders";
+    }
+    return null;
+  },
+
+  /**
+   * Find every setup message in the user's mail, newest first.
+   *
+   * **Why the database is not enough.** A setup message is recognised by a
+   * header the specification defines (`Autocrypt-Setup-Message: v1`), and this
+   * build's message database does not store arbitrary headers -- `RawHdr`
+   * carries an `extras` array for pref-defined custom headers, and nothing in
+   * the tree populates it. So the header has to be read from the message, which
+   * is why this walk streams headers and why it may not run on its own.
+   *
+   * **User-initiated only, and that is not optional.** Reading the headers of
+   * everything in a mailbox is a different thing from reading a folder the user
+   * opened, and the privacy expectation of a scan that runs by itself has
+   * changed since Enigmail shipped its first-run pass. So this runs when the
+   * Key Wizard's import section is opened and when the user asks again from the
+   * control beside it -- never on launch, never on a timer. Enigmail's shape is
+   * followed for *which* folders and *how far back*; this is the one place its
+   * trigger is deliberately not copied.
+   *
+   * **A folder that cannot be opened is skipped, not fatal.** A broken index in
+   * one account must not stop the scan finding a hit in another, which is the
+   * behaviour Enigmail's per-account error handling gave.
+   *
+   * @param {object} [options]
+   * @param {number} [options.maxAgeSeconds] - How far back to look.
+   * @param {number} [options.now] - Milliseconds since the epoch, for tests.
+   * @returns {Promise<Array<{folder: nsIMsgFolder, hdr: nsIMsgDBHdr,
+   *   messageURI: string, source: string}>>} Newest first. Nothing is imported
+   *   and nothing is adopted: the caller decides.
+   */
+  async findSetupMessages({
+    maxAgeSeconds = this.MAX_AGE_SECONDS,
+    now = Date.now(),
+  } = {}) {
+    const cutoff = Math.floor(now / 1000) - maxAgeSeconds;
+    const hits = [];
+
+    for (const folder of MailServices.accounts.allFolders) {
+      let skipped;
+      try {
+        skipped = this.skipReason(folder);
+      } catch (ex) {
+        skipped = `unreadable (${ex.message})`;
+      }
+      if (skipped) {
+        continue;
+      }
+
+      try {
+        hits.push(...(await this._scanFolder(folder, cutoff)));
+      } catch (ex) {
+        console.warn(
+          `Autocrypt setup: skipping folder ${folder.URI}: ${ex.message}`
+        );
+      }
+    }
+
+    // Newest first across folders, so a caller offering one message offers the
+    // most recent, whatever order the accounts came in.
+    hits.sort((a, b) => b.hdr.date - a.hdr.date);
+    return hits;
+  },
+
+  /**
+   * Walk one folder newest-first, stopping at the window.
+   *
+   * The order is the database's own -- descending message key, which is arrival
+   * order -- so "newest first" and "stop at the first message older than thirty
+   * days" are the reference implementation's two halves of one idea. They are
+   * also the reason the bound holds: a message that arrived recently but claims
+   * an old date stops the walk early, and that is accepted rather than
+   * defended against, because the alternative is reading every header in every
+   * folder.
+   *
+   * @param {nsIMsgFolder} folder
+   * @param {number} cutoff - Seconds since the epoch; older than this stops.
+   * @returns {Promise<object[]>} Hits in this folder, newest first.
+   */
+  async _scanFolder(folder, cutoff) {
+    const hits = [];
+    const db = folder.msgDatabase;
+    if (!db) {
+      return hits;
+    }
+
+    for (const hdr of db.reverseEnumerateMessages()) {
+      const seconds = hdr.dateInSeconds;
+      // A message with no date is not evidence that the messages after it are
+      // older, so it is looked at rather than used as the stopping point.
+      if (seconds && seconds < cutoff) {
+        break;
+      }
+
+      // A message with no local copy cannot be read without the network, and a
+      // scan must not fetch mail. `hasMsgOffline` is false for the local store
+      // of a non-offline IMAP message and true for local and POP3 folders.
+      if (!folder.hasMsgOffline(hdr.messageKey)) {
+        continue;
+      }
+
+      const messageURI = folder.getUriForMsg(hdr);
+      const headerText = await this._streamText(messageURI, true);
+      if (this._setupMarkerValue(headerText) != "v1") {
+        continue;
+      }
+
+      // Only now is the whole message read: the header pass is cheap and the
+      // body is not, so a folder with no hit never reads a body.
+      hits.push({
+        folder,
+        hdr,
+        messageURI,
+        source: await this._streamText(messageURI, false),
+      });
+    }
+
+    return hits;
+  },
+
+  /**
+   * Read a message -- or just its headers -- as text.
+   *
+   * Local-only on purpose: `streamMessage`'s and `streamHeaders`' last argument
+   * asks for a local copy and throws rather than downloading one, which is what
+   * keeps a scan from turning into a mail fetch.
+   *
+   * @param {string} messageURI
+   * @param {boolean} headersOnly
+   * @returns {Promise<string>}
+   */
+  _streamText(messageURI, headersOnly) {
+    return new Promise((resolve, reject) => {
+      let text = "";
+      let stream = null;
+
+      const listener = {
+        onStartRequest() {},
+        onDataAvailable(request, inputStream, offset, count) {
+          if (!stream) {
+            stream = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
+              Ci.nsIScriptableInputStream
+            );
+            stream.init(inputStream);
+          }
+          text += stream.read(count);
+        },
+        onStopRequest(request, status) {
+          if (Components.isSuccessCode(status)) {
+            resolve(text);
+          } else {
+            reject(new Error(`reading the message failed: ${status}`));
+          }
+        },
+      };
+      listener.QueryInterface = ChromeUtils.generateQI(["nsIStreamListener"]);
+
+      const service = MailServices.messageServiceFromURI(messageURI);
+      try {
+        if (headersOnly) {
+          service.streamHeaders(messageURI, listener, null, true);
+        } else {
+          service.streamMessage(
+            messageURI,
+            listener,
+            null, // msgWindow
+            null, // urlListener
+            false, // convertData
+            "", // additionalHeader
+            true // localOnly
+          );
+        }
+      } catch (ex) {
+        reject(ex);
+      }
+    });
   },
 
   /**

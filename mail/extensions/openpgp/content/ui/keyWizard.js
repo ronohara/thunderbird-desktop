@@ -69,6 +69,29 @@ var gGeneratedKey = null;
 var gFiles;
 
 /**
+ * The scan's result for this dialog, or null before it has run (Item 99a).
+ *
+ * Held rather than re-run so that moving between the wizard's sections does not
+ * read the user's mail again; the button beside the result forces a fresh pass.
+ *
+ * @type {?Array<{folder: nsIMsgFolder, hdr: nsIMsgDBHdr, messageURI: string,
+ *   source: string}>}
+ */
+var gSetupMessageHits = null;
+
+/**
+ * The `application/autocrypt-setup` payload the scan offered, ready for
+ * `importSetupMessage()`. Null when nothing has been offered, which is what
+ * keeps the offered button from acting on a message nobody found.
+ *
+ * @type {?string}
+ */
+var gOfferedSetupMessage = null;
+
+/** Guard so a second press while the walk is running does not start another. */
+var gSetupMessageScanRunning = false;
+
+/**
  * The GnuPG key the wizard offers, when the identity it was opened for has one
  * in the external keyring and has not chosen a key itself.
  *
@@ -545,6 +568,11 @@ function wizardImportKey() {
   );
   keepPassphrasesItem.hidden = !sepPassphraseEnabled;
   keepPassphrasesItem.checked = false;
+
+  // Item 99a: the "at setup" half of the scan. Opening this section is a
+  // user-initiated path, which is the condition the item sets; the second half
+  // is the button beside the result. Nothing here runs on launch.
+  scanForSetupMessage();
 }
 
 /**
@@ -1168,6 +1196,92 @@ async function openPgpImportStart() {
 }
 
 /**
+ * Look for a setup message in the user's mail and offer it (Item 99a).
+ *
+ * Two entry points, one function: opening the import section asks for a scan
+ * once, and the button beside the result asks for a fresh one. The distinction
+ * matters because the scan reads the headers of the user's mail -- repeating it
+ * every time the wizard switches sections would read mail the user did not ask
+ * to have read again.
+ *
+ * Nothing is imported here. A hit is put in `gOfferedSetupMessage` and the
+ * button that leads to Item 99's flow is revealed; the user decides whether to
+ * press it.
+ *
+ * @param {boolean} [rescan=false] - Scan again even if this dialog already has
+ *   a result.
+ */
+async function scanForSetupMessage(rescan = false) {
+  if (gSetupMessageScanRunning) {
+    return;
+  }
+  if (gSetupMessageHits && !rescan) {
+    presentSetupMessageHits();
+    return;
+  }
+
+  const status = document.getElementById("setupMessageScanStatus");
+  const scanButton = document.getElementById("searchSetupMessageButton");
+
+  gSetupMessageScanRunning = true;
+  status.hidden = false;
+  document.l10n.setAttributes(status, "openpgp-setup-message-scan-running");
+  scanButton.disabled = true;
+  resizeWindow();
+
+  try {
+    gSetupMessageHits = await AutocryptSetup.findSetupMessages();
+  } catch (ex) {
+    // The scan walks what it can and reports per folder; reaching here means
+    // the walk itself failed, which is a different statement from "nothing was
+    // found" and is said as such. A `null` result also means the next visit to
+    // this section tries again rather than showing a stale answer.
+    console.warn("Autocrypt setup: the scan failed", ex);
+    gSetupMessageHits = null;
+    document.l10n.setAttributes(status, "openpgp-setup-message-scan-failed");
+    return;
+  } finally {
+    gSetupMessageScanRunning = false;
+    scanButton.disabled = false;
+    resizeWindow();
+  }
+
+  presentSetupMessageHits();
+}
+
+/**
+ * Show what the scan found, or say that it found nothing.
+ *
+ * The newest hit is the one offered: several old backups can sit in a mailbox,
+ * and the recent one is the one whose key is still the user's.
+ */
+function presentSetupMessageHits() {
+  const status = document.getElementById("setupMessageScanStatus");
+  const offerButton = document.getElementById("importSetupMessageButton");
+  const hits = gSetupMessageHits ?? [];
+
+  if (!hits.length) {
+    gOfferedSetupMessage = null;
+    offerButton.hidden = true;
+    document.l10n.setAttributes(status, "openpgp-setup-message-scan-none", {
+      days: Math.round(AutocryptSetup.MAX_AGE_SECONDS / 86400),
+    });
+    status.hidden = false;
+    resizeWindow();
+    return;
+  }
+
+  const newest = hits[0];
+  gOfferedSetupMessage = newest.source;
+  document.l10n.setAttributes(status, "openpgp-setup-message-scan-found", {
+    folder: newest.folder.localizedName || newest.folder.name,
+  });
+  status.hidden = false;
+  offerButton.hidden = false;
+  resizeWindow();
+}
+
+/**
  * Import a key from an Autocrypt setup message (Item 99).
  *
  * The flow the specification describes: the message is detected, its structure
@@ -1176,9 +1290,12 @@ async function openPgpImportStart() {
  * worst outcomes -- a `v2` message offered as `v1`, or a broken message offered
  * with a prompt that cannot succeed.
  *
- * @param {string} [mimePartText] - The `application/autocrypt-setup` part. When
- *   absent, this is a no-op: the button is only shown once a message has been
- *   found, so there is nothing to guess at.
+ * @param {string} [mimePartText] - The message, or its
+ *   `application/autocrypt-setup` part. `classify()` reads whichever it is
+ *   given: the scan hands over the whole message it streamed, and a caller with
+ *   a detached part hands over the part. When absent, this is a no-op: the
+ *   button is only shown once a message has been found, so there is nothing to
+ *   guess at.
  */
 async function importSetupMessage(mimePartText) {
   if (!mimePartText) {

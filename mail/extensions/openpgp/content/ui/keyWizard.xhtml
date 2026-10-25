@@ -402,15 +402,31 @@
 
               <separator class="thin" />
 
+              <!-- Item 99a: the scan, on a user-initiated path only. It runs
+                   when this section is opened and again when the user asks, and
+                   never on launch, because it reads the headers of the user's
+                   mail. -->
+              <button
+                id="searchSetupMessageButton"
+                data-l10n-id="openpgp-setup-message-scan-button"
+                oncommand="scanForSetupMessage(true)"
+              />
+
               <!-- Item 99: the other starting point, beside "I have a key
                    file", because a user with no key and a setup message in
-                   their mailbox already comes here. Hidden until a message is
-                   actually offered, so it is not a button that explains
-                   itself by failing. -->
+                   their mailbox already comes here. Hidden until the scan has
+                   actually offered a message, so it is not a button that
+                   explains itself by failing. -->
               <button
                 id="importSetupMessageButton"
                 data-l10n-id="openpgp-import-setup-message-button"
-                oncommand="importSetupMessage()"
+                oncommand="importSetupMessage(gOfferedSetupMessage)"
+                hidden="hidden"
+              />
+
+              <description
+                id="setupMessageScanStatus"
+                class="tip-caption"
                 hidden="hidden"
               />
 

@@ -166,6 +166,23 @@ openpgp-passphrase-prompt-title = Passphrase required
 openpgp-import-setup-message-button =
     .label = Import from an Autocrypt Setup Message…
 
+# Item 99a: the scan that offers the button above. It reads the headers of the
+# user's mail, so it runs when this section is opened and when the user asks
+# again -- never on launch.
+openpgp-setup-message-scan-button =
+    .label = Search Mail for a Setup Message
+
+openpgp-setup-message-scan-running = Searching your mail for a setup message…
+
+#   $folder (String) - the mail folder the message was found in
+openpgp-setup-message-scan-found = A setup message was found in { $folder }.
+
+#   $days (Number) - how far back the scan looks
+openpgp-setup-message-scan-none = No setup message was found in the last { $days } days.
+
+# A walk that failed is not the same answer as a walk that found nothing.
+openpgp-setup-message-scan-failed = The search for a setup message could not be completed.
+
 openpgp-import-key-button =
     .label = Select File to Import…
     .accesskey = S
