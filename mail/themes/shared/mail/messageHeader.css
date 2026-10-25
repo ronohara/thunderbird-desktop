@@ -599,6 +599,16 @@ html|header.message-security-header {
   }
 }
 
+/* The provenance mark beside the panel heading. Fixed 16px for the same reason
+   the header badge is: it sits on the same line as the heading's own text, and
+   a flex header would otherwise stretch it. */
+.security-tech-mark {
+  inline-size: 16px;
+  block-size: 16px;
+  margin-inline-end: 3px;
+  flex: none;
+}
+
 .message-security-body {
   overflow-y: auto;
   flex: 1;

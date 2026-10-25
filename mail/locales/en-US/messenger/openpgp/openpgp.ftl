@@ -90,6 +90,12 @@ openpgp-key-id-label =
     .label = Key ID
 
 openpgp-key-man-dialog-title = OpenPGP Key Manager
+# Shown when an operation that acts on this profile's keys is attempted on a
+# key that GnuPG holds instead. The key is listed here so the dialog can say
+# where it lives; the copy on screen is public only, and the authoritative one
+# is in the keyring.
+openpgp-key-man-external-key-info =
+    { $userId } is managed by GnuPG, not by this profile. Use GnuPG to change or remove it.
 openpgp-key-man-generate =
     .label = New Key Pair
     .accesskey = K

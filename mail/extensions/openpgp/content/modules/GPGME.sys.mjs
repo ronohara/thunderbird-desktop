@@ -162,6 +162,29 @@ export var GPGME = {
   },
 
   /**
+   * Every public key in the external GnuPG keyring, exported as armored blocks.
+   *
+   * For a caller that has to show the whole keyring rather than answer a
+   * question about one address -- the Key Manager is the one that does.
+   *
+   * No capability filter, deliberately. The other entry points filter to keys
+   * that can encrypt or that hold a secret, because they are answering "can
+   * this address be written to" or "is this mine". A dialog that lists the
+   * keyring has to be able to show a revoked or expired key too, which is
+   * exactly what a user opens it to look for; the manager's own toggles decide
+   * what is displayed.
+   *
+   * Cost: one gpgme context per key, because each is exported separately. The
+   * caller is a dialog the user opened, not a mail path, and the result is
+   * cached by `keyRing.sys.mjs` for the session.
+   *
+   * @returns {Map} Armored key blocks indexed by fingerprint.
+   */
+  getPublicKeysForKeyring() {
+    return GPGMELib.exportKeys("", false);
+  },
+
+  /**
    * Fingerprints of keys in the external GnuPG keyring that hold a secret key
    * for the given email address. Only the fingerprints are retrieved; no
    * secret key material is exported.

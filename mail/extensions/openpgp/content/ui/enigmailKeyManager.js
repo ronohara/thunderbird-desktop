@@ -128,8 +128,10 @@ function onDialogClose() {
   window.close();
 }
 
-function loadkeyList() {
-  sortTree();
+async function loadkeyList() {
+  // Awaited: building the list now reads the GnuPG keyring, so hiding the
+  // wait popup before it resolves would show an empty list and then fill it.
+  await sortTree();
   gKeyListView.applyFilter(0);
   document.getElementById("pleaseWait").hidePopup();
   document.getElementById("statusText").value = "";
@@ -169,14 +171,19 @@ function reloadKeys() {
   }
 }
 
-function buildKeyList(refresh) {
-  var keyListObj = {};
-
+async function buildKeyList(refresh) {
   if (refresh) {
     EnigmailKeyRing.clearCache();
+    // The GnuPG cache is per-session and would otherwise hold the keyring as
+    // it was when this dialog opened, so a key added to the keyring in the
+    // meantime would not appear until restart.
+    EnigmailKeyRing.clearGnuPgKeyCache();
   }
 
-  keyListObj = EnigmailKeyRing.getAllKeys(
+  // The merged list, not `getAllKeys()`: a key that lives only in GnuPG is
+  // absent from the profile ring, and this dialog exists to say where a key
+  // lives. `getAllKeys()` is left alone so that no other list changes.
+  const keyListObj = await EnigmailKeyRing.getManagerKeyList(
     window,
     getSortColumn(),
     getSortDirection()
@@ -331,8 +338,46 @@ function enigmailKeyDetails(keyId = null) {
   }
 }
 
+/**
+ * Refuses an operation whose target is the profile's keyring when the key on
+ * screen is not in it.
+ *
+ * A key GnuPG holds is shown here so that the dialog can say where keys live.
+ * Deleting it from the profile would act on nothing, or on a stale copy of the
+ * same fingerprint, and report success either way -- the failure the item calls
+ * out: "a list that grows but whose rows do nothing is worse than the silence
+ * it replaced".
+ *
+ * Names GnuPG rather than failing silently, and does not offer to act on the
+ * keyring: Item 81a is about showing those keys, and offering to delete from
+ * the keyring is a decision nobody has made.
+ *
+ * @param {EnigmailKeyObj} keyObj - The key the operation would act on.
+ * @returns {boolean} True when the operation must not proceed.
+ */
+function refuseForExternalKey(keyObj) {
+  if (!EnigmailKeyRing.isExternalKey(keyObj)) {
+    return false;
+  }
+  Services.prompt.alert(
+    window,
+    null,
+    l10n.formatValueSync("openpgp-key-man-external-key-info", {
+      userId: keyObj.userId,
+    })
+  );
+  return true;
+}
+
 async function enigmailDeleteKey() {
   const keyList = getSelectedKeys();
+
+  for (const pos of keyList) {
+    if (refuseForExternalKey(gKeyList[pos])) {
+      return;
+    }
+  }
+
   let deleteSecret = false;
   let text;
   if (keyList.length == 1) {
@@ -452,6 +497,9 @@ async function enigCreateKeyMsg() {
 async function enigmailRevokeKey() {
   var keyList = getSelectedKeys();
   const keyInfo = gKeyList[keyList[0]];
+  if (refuseForExternalKey(keyInfo)) {
+    return;
+  }
   EnigRevokeKey(keyInfo, function (success) {
     if (success) {
       refreshKeys();
@@ -518,6 +566,16 @@ async function prepareRevocation() {
 async function enigmailExportKeys(which) {
   const exportSecretKey = which == "secret";
   var keyList = getSelectedKeys();
+
+  // Both exports read the profile ring. For a key GnuPG holds, the public one
+  // would write nothing useful and report success -- the keyring holds the
+  // authoritative copy, and exporting it is gpg's job.
+  for (const pos of keyList) {
+    if (refuseForExternalKey(gKeyList[pos])) {
+      return;
+    }
+  }
+
   var defaultFileName;
 
   if (keyList.length == 1) {
@@ -890,7 +948,7 @@ function sortTree(column) {
   } else {
     gUserList.setAttribute("sortResource", "enigUserNameCol");
   }
-  buildKeyList(false);
+  return buildKeyList(false);
 }
 
 function getSortColumn() {
@@ -1067,14 +1125,27 @@ var gKeyListView = {
     return "";
   },
 
-  getImageSrc(row) {
+  getImageSrc(row, col) {
     const r = this.getFilteredRow(row);
-    if (!r) {
+    if (!r || r.rowType != "key") {
       return null;
     }
-    //let keyObj = gKeyList[r.keyNum];
+    const keyObj = gKeyList[r.keyNum];
+    if (!keyObj || col?.id != "enigUserNameCol") {
+      return null;
+    }
 
-    return null;
+    // The provenance mark for a key GnuPG holds. Per row, not once for the
+    // page: an identity can hold one key in each store, so a header-level
+    // badge would have to be wrong about one of them.
+    //
+    // The same asset the message badge uses, so the dialog and the header name
+    // the engine the same way. Branding-scoped, so another branding has no
+    // wing -- the image then simply fails to load and the row keeps its text,
+    // which is why nothing depends on this returning a value.
+    return EnigmailKeyRing.isExternalKey(keyObj)
+      ? "chrome://branding/content/gnupg-wing.svg"
+      : null;
   },
 
   /**

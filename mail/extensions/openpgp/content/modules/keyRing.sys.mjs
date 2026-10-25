@@ -235,6 +235,8 @@ export var EnigmailKeyRing = {
    * Addresses whose GnuPG keys have already been parsed this session.
    */
   gnuPgLoadedFor: new Set(),
+  /** Whether the whole keyring has been read by `loadAllGnuPgKeys()`. */
+  gnuPgKeyringLoaded: false,
 
   /**
    * Parse the external GnuPG keys for an address into the session cache.
@@ -448,6 +450,146 @@ export var EnigmailKeyRing = {
   },
 
   /**
+   * Parse every key in the GnuPG keyring into the transient cache.
+   *
+   * The whole-keyring counterpart of `loadGnuPgKeysForEmail()`, which needs an
+   * address and is therefore no use to a dialog that lists keys. Guarded by a
+   * flag rather than by `gnuPgLoadedFor`, because that set is keyed by
+   * address; `clearGnuPgKeyCache()` resets both.
+   *
+   * Nothing is imported: each block is parsed in a temporary FFI context and
+   * the key object is kept for the session, which is the same treatment a
+   * per-address lookup gives.
+   *
+   * @returns {Promise<boolean>} whether the keyring was read.
+   */
+  async loadAllGnuPgKeys() {
+    if (
+      !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg") ||
+      !Services.prefs.getBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg")
+    ) {
+      return false;
+    }
+    if (this.gnuPgKeyringLoaded) {
+      return true;
+    }
+    if (!lazy.GPGME.init()) {
+      return false;
+    }
+    this.gnuPgKeyringLoaded = true;
+
+    let blocks;
+    try {
+      blocks = lazy.GPGME.getPublicKeysForKeyring();
+    } catch (ex) {
+      lazy.log.warn("Reading the GnuPG keyring failed", ex);
+      return true;
+    }
+
+    for (const [fpr, keyBlock] of blocks) {
+      const normalized = fpr.toUpperCase();
+      if (this.gnuPgKeys.has(normalized)) {
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = await lazy.RNP.getKeyListFromKeyBlockImpl(keyBlock);
+      } catch (ex) {
+        lazy.log.warn(`Parsing the GnuPG key ${fpr} failed`, ex);
+        continue;
+      }
+      if (!parsed?.length) {
+        continue;
+      }
+      const keyObj = new lazy.EnigmailKeyObj(parsed[0]);
+      this.gnuPgKeys.set(normalized, keyObj);
+      this.gnuPgKeyBlocks.set(normalized, keyBlock);
+      for (const id of [keyObj.keyId, keyObj.fpr]) {
+        if (id) {
+          this.gnuPgKeyIds.set(id.toUpperCase(), normalized);
+        }
+      }
+      for (const sub of keyObj.subKeys) {
+        if (sub.keyId) {
+          this.gnuPgKeyIds.set(sub.keyId.toUpperCase(), normalized);
+        }
+      }
+    }
+    return true;
+  },
+
+  /**
+   * Whether GnuPG is where this key lives, rather than the profile.
+   *
+   * The manager asks before offering an operation whose target is the profile
+   * ring -- deleting, backing up, changing a passphrase -- because the key on
+   * screen is GnuPG's public copy and those operations would either fail
+   * quietly or act on something else.
+   *
+   * @param {EnigmailKeyObj|string} key - A key object, or a key id or
+   *   fingerprint.
+   * @returns {boolean}
+   */
+  isExternalKey(key) {
+    const id = typeof key == "string" ? key : key?.keyId;
+    return !!this.getGnuPgKeyById(id);
+  },
+
+  /**
+   * The whole key list as the Key Manager shows it: the profile ring, plus
+   * every key GnuPG holds.
+   *
+   * Kept separate from `getAllKeys()` on purpose. That one returns the global
+   * ring cache, which dozens of callers read -- the composer's key assistant,
+   * the settings pages, every recipient lookup -- and merging external keys
+   * into it would put GnuPG's keys into all of them. The manager is the one
+   * dialog whose job is to show where keys live, so it is the one that asks.
+   *
+   * A fingerprint in both stores appears once, as GnuPG's revision, which is
+   * the same precedence `getKeyById()` applies and for the same reason: a
+   * stale profile copy must not outrank the live key.
+   *
+   * @param {?window} win - Parent window, for the ring's own loading path.
+   * @param {string} sortColumn - See `getAllKeys()`.
+   * @param {1|-1} sortDirection - Sort direction.
+   * @returns {Promise<object>} `{keyList, keySortList}`, the same shape
+   *   `getAllKeys()` returns.
+   */
+  async getManagerKeyList(win, sortColumn, sortDirection) {
+    // The ring first: it sets the global cache up, and its loader is
+    // synchronous against that cache.
+    this.getAllKeys(win, sortColumn, sortDirection);
+    const ringKeys = gKeyListObj.keyList;
+
+    await this.loadAllGnuPgKeys();
+
+    const byFpr = new Map();
+    for (const keyObj of ringKeys) {
+      byFpr.set(keyObj.fpr.toUpperCase(), keyObj);
+    }
+    for (const [fpr, keyObj] of this.gnuPgKeys) {
+      byFpr.set(fpr, keyObj);
+    }
+
+    const keyList = [...byFpr.values()];
+    const keySortList = keyList.map((keyObj, i) => ({
+      userId: keyObj.userId ? keyObj.userId.toLowerCase() : "",
+      keyId: keyObj.keyId,
+      fpr: keyObj.fpr,
+      keyNum: i,
+    }));
+
+    // The sort functions index into `keyList` by `keyNum`, so the object this
+    // is given only has to hold the list.
+    const column = typeof sortColumn == "string" ? sortColumn : "userid";
+    keySortList.sort(
+      getSortFunction(column.toLowerCase(), { keyList }, sortDirection)
+    );
+
+    return { keyList, keySortList };
+  },
+
+  /**
    * Transient keys from the cache that match an address.
    *
    * @param {string} emailAddr - Address to look up.
@@ -518,6 +660,7 @@ export var EnigmailKeyRing = {
     this.gnuPgKeyIds.clear();
     this.gnuPgKeyBlocks.clear();
     this.gnuPgLoadedFor.clear();
+    this.gnuPgKeyringLoaded = false;
   },
 
   /**

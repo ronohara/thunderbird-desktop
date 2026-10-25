@@ -2667,7 +2667,27 @@ Enigmail.msg = {
         );
     }
 
-    document.getElementById("techLabel").textContent = "- OpenPGP";
+    // The heading names the same engine the header badge names, because the
+    // panel exists to explain that badge and the two disagreeing would be
+    // worse than either alone. `getMessageEngine()` is the single source for
+    // it, so there is one answer rather than two that must be kept in step.
+    //
+    // The literals match the existing "- OpenPGP", which was never localized;
+    // a new localized pair would be a string change in every locale for a
+    // suffix, so this stays consistent with what is already here.
+    const engine = Enigmail.hdrView.getMessageEngine();
+    const isGnuPG = engine == "gnupg";
+    document.getElementById("techLabel").textContent = isGnuPG
+      ? "- GnuPG"
+      : "- OpenPGP";
+
+    const techMark = document.getElementById("securityTechMark");
+    techMark.hidden = !isGnuPG;
+    if (isGnuPG) {
+      techMark.setAttribute("src", "chrome://branding/content/gnupg-wing.svg");
+    } else {
+      techMark.removeAttribute("src");
+    }
 
     const encryptionLabel = document.getElementById("encryptionLabel");
     // eslint-disable-next-line mozilla/prefer-formatValues

@@ -1800,7 +1800,21 @@ async function reloadOpenPgpUI() {
     external.classList.add("external-pill");
     document.l10n.setAttributes(external, "key-external-label");
 
+    // The mark sits beside the pill rather than replacing it. Per key, not per
+    // page: an identity can hold one key in each store, so a page-level badge
+    // would have to be wrong about one of them -- and this row is the one the
+    // mark is true of. Internal keys are left unmarked: they are the default,
+    // and a mark on every default row is noise rather than information.
+    const mark = document.createElement("img");
+    mark.classList.add("openpgp-source-mark");
+    mark.setAttribute("src", "chrome://branding/content/gnupg-wing.svg");
+    mark.setAttribute("alt", "");
+    // Branding-scoped file: another branding has no wing, and a broken image
+    // beside the pill is worse than the pill alone.
+    mark.addEventListener("error", () => mark.remove());
+
     dateContainer.appendChild(external);
+    dateContainer.appendChild(mark);
     indent.appendChild(dateContainer);
 
     container.appendChild(box);

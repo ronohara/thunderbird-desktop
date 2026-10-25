@@ -696,6 +696,16 @@ richlistitem[default="true"],
   border-radius: 12px;
 }
 
+/* The provenance mark beside a key's "External GnuPG Key" pill. 16px so it
+   reads at the same weight as the pill's own text, and no flex growth. */
+.openpgp-source-mark {
+  inline-size: 16px;
+  block-size: 16px;
+  margin-inline-start: 6px;
+  flex: none;
+  align-self: center;
+}
+
 .input-container > .plain {
   flex: 1;
   background-color: transparent;

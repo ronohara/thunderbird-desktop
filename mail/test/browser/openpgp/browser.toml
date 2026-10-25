@@ -50,6 +50,12 @@ run-if = [
 
 ["browser_provenanceBadge.js"]
 
+["browser_provenanceMark.js"]
+
+["browser_keyManagerKeyring.js"]
+
+["browser_stage12Verification.js"]
+
 ["browser_pgpSignedPartDispatch.js"]
 
 ["browser_upload.js"]
