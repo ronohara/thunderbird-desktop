@@ -4,6 +4,8 @@
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+import * as PBEIterationFloor from "resource:///modules/PBEIterationFloor.sys.mjs";
+import * as PBEStoredCount from "resource:///modules/PBEStoredCount.sys.mjs";
 
 const lazy = {};
 
@@ -48,14 +50,23 @@ ChromeUtils.defineESModuleGetters(lazy, {
   MailUsageTelemetry: "resource:///modules/MailUsageTelemetry.sys.mjs",
   OAuth2Providers: "resource:///modules/OAuth2Providers.sys.mjs",
   OsEnvironment: "resource://gre/modules/OsEnvironment.sys.mjs",
-  PBEIterationFloor: "resource:///modules/PBEIterationFloor.sys.mjs",
-  PBEStoredCount: "resource:///modules/PBEStoredCount.sys.mjs",
   PdfJs: "resource://pdf.js/PdfJs.sys.mjs",
   RemoteSecuritySettings:
     "resource://gre/modules/psm/RemoteSecuritySettings.sys.mjs",
   TBDistCustomizer: "resource:///modules/TBDistCustomizer.sys.mjs",
   XULStoreUtils: "resource:///modules/XULStoreUtils.sys.mjs",
 });
+
+// Static imports rather than entries in the lazy block above or a call at the
+// point of use. As lazy getters these two resolved to `undefined`, and every
+// startup logged "can't access property applyPBEIterationFloor,
+// lazy.PBEIterationFloor is undefined" -- so the iteration floor was never
+// applied and the stored-count report never ran. The same fault, and the same
+// fix, as changemp.js, keyAssistant.js and about3Pane.js.
+//
+// Both are namespace imports because each module exports functions and
+// constants and no member named after itself. Neither has any import of its
+// own, so there is no cycle to defer and nothing for laziness to buy.
 
 ChromeUtils.defineLazyGetter(lazy, "windowsAlertsService", () => {
   // We might not have the Windows alerts service: e.g., on Windows 7 and Windows 8.
@@ -513,12 +524,12 @@ MailGlue.prototype = {
           // state is readable through currentPBEIterationFloor(), which is
           // what a report should read rather than inferring from silence.
           const { applied, value, previous } =
-            lazy.PBEIterationFloor.applyPBEIterationFloor();
+            PBEIterationFloor.applyPBEIterationFloor();
           if (applied && previous && previous !== String(value)) {
             console.warn(
               "PBE iteration floor: NSS_MIN_MP_PBE_ITERATION_COUNT was " +
                 `"${previous}", overridden by ` +
-                `${lazy.PBEIterationFloor.PREF}=${value}`
+                `${PBEIterationFloor.PREF}=${value}`
             );
           }
         }
@@ -851,16 +862,14 @@ MailGlue.prototype = {
    */
   async _reportStoredPbeCount() {
     try {
-      const floor = lazy.PBEIterationFloor.currentPBEIterationFloor();
+      const floor = PBEIterationFloor.currentPBEIterationFloor();
       const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
-      this.pbeStoredCount = await lazy.PBEStoredCount.reportStoredCount(
+      this.pbeStoredCount = await PBEStoredCount.reportStoredCount(
         profileDir,
         floor
       );
 
-      if (
-        this.pbeStoredCount.status === lazy.PBEStoredCount.Status.BelowFloor
-      ) {
+      if (this.pbeStoredCount.status === PBEStoredCount.Status.BelowFloor) {
         console.warn(
           `PBE iteration floor: key4.db is stored at ` +
             `${this.pbeStoredCount.stored} iterations, below the floor of ` +
