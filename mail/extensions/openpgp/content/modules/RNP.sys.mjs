@@ -4068,33 +4068,172 @@ export var RNP = {
    * @param {string} keyFingerprint - Fingerprint.
    */
   async revokeKey(keyFingerprint) {
-    const tracker =
-      RnpPrivateKeyUnlockTracker.constructFromFingerprint(keyFingerprint);
-    if (!tracker.available()) {
-      return;
+    await this._revoke(keyFingerprint, null, null);
+  },
+
+  /**
+   * Revoke one subkey, leaving the primary key and its other subkeys alone.
+   *
+   * Item 70. `revokeKey()` already worked on any handle -- the tracker resolves
+   * a subkey fingerprint without forcing the primary, and `rnp_key_revoke`
+   * acts on whatever handle it is given -- so there is no new library work
+   * here, only a way to reach it. What the UI previously offered was "revoke"
+   * on a whole key, which is a much larger act than retiring one subkey.
+   *
+   * The authorising secret key is the primary's: a subkey revocation is signed
+   * by the key that made the subkey, and `rnp_key_revoke` finds it. So the
+   * subkey's own secret material is not required, only the primary's.
+   *
+   * @param {string} subkeyFpr - Fingerprint of the subkey to revoke.
+   * @param {?string} code - RFC 4880 reason code: "no", "superseded",
+   *   "compromised" or "retired". Null means "no reason given".
+   * @param {?string} reason - Free text, or null.
+   * @returns {Promise<boolean>} true if the subkey is now revoked.
+   */
+  async revokeSubkey(subkeyFpr, code = null, reason = null) {
+    return this._revoke(subkeyFpr, code, reason, true);
+  },
+
+  /**
+   * The one revoke path, for a key or a subkey.
+   *
+   * @param {string} fingerprint - Of the key or subkey.
+   * @param {?string} code - Reason code, or null.
+   * @param {?string} reason - Free text, or null.
+   * @param {boolean} [mustBeSubkey=false] - Refuse a primary key's fingerprint.
+   * @returns {Promise<boolean>} true if the revocation was applied.
+   */
+  async _revoke(fingerprint, code, reason, mustBeSubkey = false) {
+    // Checked before the tracker is built: constructing one for a fingerprint
+    // that is not in the ring throws from `available()` rather than reporting
+    // absence. The same guard as `addUserId()` for the same reason.
+    if (!this._keyIsInTheRing(fingerprint)) {
+      return false;
     }
+
+    const tracker =
+      RnpPrivateKeyUnlockTracker.constructFromFingerprint(fingerprint);
+    if (!tracker.available()) {
+      return false;
+    }
+
+    if (mustBeSubkey) {
+      // Checked before anything is revoked: calling this with a primary's
+      // fingerprint would revoke the whole key, which is a different and much
+      // larger operation than the caller asked for. The guard lives here
+      // rather than in the UI because the UI's row index is not evidence.
+      const sub = new lazy.ctypes.bool();
+      if (RNPLib.rnp_key_is_sub(tracker.getHandle(), sub.address())) {
+        tracker.release();
+        throw new Error("rnp_key_is_sub failed");
+      }
+      if (!sub.value) {
+        tracker.release();
+        return false;
+      }
+    }
+
+    // The signature that authorises a subkey revocation is made by the
+    // *primary* key, which `rnp_key_revoke` finds for itself in the keyring --
+    // but only if that key is unlocked. Unlocking the subkey alone is not
+    // enough, and the failure is a bare RNP error with no clue why.
+    const trackers = [tracker];
+    const handle = tracker.getHandle();
+    const is_sub = new lazy.ctypes.bool();
+    if (RNPLib.rnp_key_is_sub(handle, is_sub.address())) {
+      tracker.release();
+      throw new Error("rnp_key_is_sub failed");
+    }
+    if (is_sub.value) {
+      const primary = this.getPrimaryKeyHandleFromSub(
+        RNPLib.ffi,
+        handle
+      );
+      if (!primary) {
+        tracker.release();
+        return false;
+      }
+      const primaryTracker = new RnpPrivateKeyUnlockTracker(primary);
+      trackers.push(primaryTracker);
+    }
+
+    for (const t of trackers) {
+      t.setAllowPromptingUserForPassword(true);
+      t.setAllowAutoUnlockWithCachedPasswords(true);
+      await t.unlock();
+      if (!t.isUnlocked()) {
+        for (const other of trackers) {
+          other.release();
+        }
+        return false;
+      }
+    }
+
+    const revokeResult = RNPLib.rnp_key_revoke(handle, 0, null, code, reason);
+    for (const t of trackers) {
+      t.release();
+    }
+    if (revokeResult) {
+      throw new Error(`rnp_key_revoke failed for fingerprint=${fingerprint}`);
+    }
+    await this.saveKeyRings();
+    return true;
+  },
+
+  /**
+   * Remove a user ID from a key.
+   *
+   * Item 70. `rnp_uid_remove` was bound but reached only inside
+   * `export_pubkey_strip_sigs_uids`, a public-export helper, so key management
+   * could not use it. This is the key-management path: the user ID is removed
+   * from the real key, and the change is saved.
+   *
+   * Not reversible by re-adding: the self-certification is gone, so anything
+   * that recorded this address against the key no longer sees it. The UI
+   * confirms first.
+   *
+   * @param {string} primaryFpr - Fingerprint of the key to edit.
+   * @param {string} userId - The user ID to remove, matched by its address as
+   *   well as by its whole text.
+   * @returns {Promise<boolean>} true if it was removed.
+   */
+  async removeUserId(primaryFpr, userId) {
+    if (!this._keyIsInTheRing(primaryFpr)) {
+      return false;
+    }
+
+    const tracker =
+      RnpPrivateKeyUnlockTracker.constructFromFingerprint(primaryFpr);
+    if (!tracker.available()) {
+      return false;
+    }
+
     tracker.setAllowPromptingUserForPassword(true);
     tracker.setAllowAutoUnlockWithCachedPasswords(true);
     await tracker.unlock();
     if (!tracker.isUnlocked()) {
-      return;
+      tracker.release();
+      return false;
     }
 
-    const flags = 0;
-    const revokeResult = RNPLib.rnp_key_revoke(
-      tracker.getHandle(),
-      flags,
-      null,
-      null,
-      null
-    );
-    tracker.release();
-    if (revokeResult) {
-      throw new Error(
-        `rnp_key_revoke failed for fingerprint=${keyFingerprint}`
-      );
+    let uidHandle = null;
+    try {
+      uidHandle = this._findUidHandle(tracker.getHandle(), userId);
+      if (!uidHandle) {
+        return false;
+      }
+      if (RNPLib.rnp_uid_remove(tracker.getHandle(), uidHandle)) {
+        throw new Error("rnp_uid_remove failed");
+      }
+    } finally {
+      if (uidHandle) {
+        RNPLib.rnp_uid_handle_destroy(uidHandle);
+      }
+      tracker.release();
     }
+
     await this.saveKeyRings();
+    return true;
   },
 
   _getKeyHandleByKeyIdOrFingerprint(ffi, id, findPrimary) {
@@ -6744,6 +6883,9 @@ export var RNP = {
     // Checked before the tracker is built, because constructing one for a
     // fingerprint that is not in the ring throws from `available()` rather
     // than reporting absence.
+    if (!this._keyIsInTheRing(primaryFpr)) {
+      return false;
+    }
     if (!this.canAddSubkeyByFpr(primaryFpr)) {
       return false;
     }
@@ -6857,6 +6999,9 @@ export var RNP = {
     // Checked before the tracker is built, because constructing one for a
     // fingerprint that is not in the ring throws from `available()` rather
     // than reporting absence.
+    if (!this._keyIsInTheRing(primaryFpr)) {
+      return false;
+    }
     if (!this.canAddSubkeyByFpr(primaryFpr)) {
       return false;
     }
@@ -6968,6 +7113,28 @@ export var RNP = {
       return uid;
     }
     return null;
+  },
+
+  /**
+   * Whether a fingerprint names a key this FFI can see.
+   *
+   * Exists because building an unlock tracker for an absent fingerprint
+   * throws rather than reporting absence, so every path that takes a
+   * fingerprint from a caller has to ask this first.
+   *
+   * @param {string} fpr
+   * @returns {boolean}
+   */
+  _keyIsInTheRing(fpr) {
+    const handle = this.getKeyHandleByKeyIdOrFingerprint(
+      RNPLib.ffi,
+      `0x${fpr}`
+    );
+    if (!handle || handle.isNull()) {
+      return false;
+    }
+    RNPLib.rnp_key_handle_destroy(handle);
+    return true;
   },
 
   /**

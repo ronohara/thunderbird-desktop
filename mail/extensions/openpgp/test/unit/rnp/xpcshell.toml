@@ -58,6 +58,8 @@ skip-if = ["os != 'linux'"]
 ["test_stage6.js"]
 skip-if = ["os != 'linux'"]
 
+["test_keyManagementOps.js"]
+
 ["test_keyPrecedence.js"]
 
 ["test_recipientChecks.js"]

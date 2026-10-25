@@ -86,6 +86,13 @@
               disabled="disabled"
               hidden="hidden"
             />
+            <button
+              id="removeUserIdButton"
+              data-l10n-id="openpgp-key-details-remove-uid"
+              oncommand="removeUserId()"
+              disabled="disabled"
+              hidden="hidden"
+            />
           </hbox>
 
           <label
@@ -458,6 +465,20 @@
 
                 <treechildren id="keyListChildren" />
               </tree>
+            </hbox>
+            <hbox>
+              <!--
+                Item 70. Revoking one subkey, where subkeys are already listed.
+                The Key Manager offers revoke only on whole keys, which is a
+                much larger act than retiring a subkey.
+              -->
+              <button
+                id="revokeSubkeyButton"
+                data-l10n-id="openpgp-key-details-revoke-subkey"
+                oncommand="revokeSelectedSubkey()"
+                disabled="disabled"
+                hidden="hidden"
+              />
             </hbox>
             <label
               id="legendMissingSecret"

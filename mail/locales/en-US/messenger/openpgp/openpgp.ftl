@@ -332,6 +332,24 @@ openpgp-key-details-add-uid-failed = The user ID could not be added. The key may
 openpgp-key-details-make-primary-confirm = Make "{ $userId }" the primary user ID? Other programs will show this key under that address.
 openpgp-key-details-make-primary-failed = The primary user ID could not be changed.
 
+# Item 70: revoking one subkey and removing a user ID. Both are irreversible and
+# both say so before they happen, because a subkey revocation breaks every
+# message already encrypted to that subkey, and a removed user ID is not
+# restored by adding the same address again.
+openpgp-key-details-revoke-subkey =
+    .label = Revoke Subkey…
+    .accesskey = k
+openpgp-key-details-revoke-subkey-confirm = Revoke this subkey? Messages already encrypted to it can no longer be read by anyone, and this cannot be undone. The primary key and the other subkeys are not affected.
+openpgp-key-details-revoke-subkey-failed = The subkey could not be revoked.
+openpgp-key-details-remove-uid =
+    .label = Remove User ID…
+    .accesskey = R
+# Variables:
+# $userId (String) - The user ID about to be removed.
+openpgp-key-details-remove-uid-confirm = Remove "{ $userId }" from this key? Its signature over that address is deleted, and adding the same address again will not restore it.
+openpgp-key-details-remove-uid-last = A key needs at least one user ID. Add another before removing this one.
+openpgp-key-details-remove-uid-failed = The user ID could not be removed.
+
 openpgp-key-details-structure-tab =
     .label = Structure
 openpgp-key-details-uid-certified-col =

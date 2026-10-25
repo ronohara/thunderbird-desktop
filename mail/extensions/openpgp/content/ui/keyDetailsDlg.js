@@ -373,6 +373,18 @@ function updateUserIdButtons(keyObj) {
   const canEdit = keyObj?.secretAvailable && keyObj.keyTrust != "r";
   document.getElementById("addUserIdButton").hidden = !canEdit;
   document.getElementById("makePrimaryUidButton").hidden = !canEdit;
+  document.getElementById("removeUserIdButton").hidden = !canEdit;
+  const revoke = document.getElementById("revokeSubkeyButton");
+  revoke.hidden = !canEdit;
+  if (canEdit) {
+    // Row 0 is the primary, so only rows 1 and up are revocable here.
+    const list = document.getElementById("subkeyList");
+    const refreshRevoke = () => {
+      revoke.disabled = list.selectedRow < 1;
+    };
+    list.addEventListener("select", refreshRevoke);
+    refreshRevoke();
+  }
 
   if (!canEdit) {
     return;
@@ -382,12 +394,133 @@ function updateUserIdButtons(keyObj) {
   // already primary. Re-read on every selection change rather than once.
   const list = document.getElementById("userIds");
   const button = document.getElementById("makePrimaryUidButton");
+  const remove = document.getElementById("removeUserIdButton");
   const refresh = () => {
     const selected = list.selectedItem;
     button.disabled = !selected || selected.label == keyObj.userId;
+    // Refused when it is the only one, because a key with no user ID is not
+    // usable by any client -- the button says so rather than failing later.
+    remove.disabled = !selected || userIdsOf(keyObj).length <= 1;
   };
   list.addEventListener("select", refresh);
   refresh();
+}
+
+/**
+ * Item 70: revoke the selected subkey.
+ *
+ * Confirmed, and with a reason code, because a subkey revocation is not
+ * reversible and it breaks every message already encrypted to that subkey. The
+ * primary key and its other subkeys are untouched.
+ */
+async function revokeSelectedSubkey() {
+  const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+  if (!keyObj?.secretAvailable) {
+    return;
+  }
+
+  const selected = document.getElementById("subkeyList").selectedRow;
+  // Row 0 is the primary, which this button does not act on: revoking the
+  // primary is a different operation and is offered elsewhere.
+  if (selected < 1) {
+    return;
+  }
+  const fprs = keyObj.subKeys.map(sk => sk.fpr);
+  const subkeyFpr = fprs[selected - 1];
+  if (!subkeyFpr) {
+    return;
+  }
+
+  if (
+    !Services.prompt.confirm(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-revoke-subkey-confirm")
+    )
+  ) {
+    return;
+  }
+
+  let revoked = false;
+  try {
+    revoked = await RNP.revokeSubkey(subkeyFpr);
+  } catch (e) {
+    console.warn("Revoking a subkey FAILED!", e);
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-revoke-subkey-failed")
+    );
+    return;
+  }
+
+  if (revoked) {
+    onDataModified();
+  }
+}
+
+/**
+ * Item 70: remove the selected user ID.
+ *
+ * Confirmed without an "are you sure" that can be dismissed reflexively: the
+ * message says what is lost. Re-adding the same address does not restore the
+ * old self-certification, so anything that recorded this address against the
+ * key no longer sees it.
+ */
+async function removeUserId() {
+  const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+  const userId = selectedUserId();
+  if (!keyObj?.secretAvailable || !userId) {
+    return;
+  }
+
+  // The last user ID is not removable: a key with none is not a key any client
+  // will use, and RNP would leave it in that state.
+  if (userIdsOf(keyObj).length <= 1) {
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-remove-uid-last")
+    );
+    return;
+  }
+
+  if (
+    !Services.prompt.confirm(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-remove-uid-confirm", {
+        userId,
+      })
+    )
+  ) {
+    return;
+  }
+
+  let removed = false;
+  try {
+    removed = await RNP.removeUserId(keyObj.fpr, userId);
+  } catch (e) {
+    console.warn("Removing a user ID FAILED!", e);
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-remove-uid-failed")
+    );
+    return;
+  }
+
+  if (removed) {
+    onDataModified();
+  }
+}
+
+/**
+ * @param {object} key An EnigmailKey.
+ * @returns {string[]} Its user ID strings.
+ */
+function userIdsOf(key) {
+  return key.userIds.filter(uid => uid.type === "uid").map(uid => uid.userId);
 }
 
 /**
