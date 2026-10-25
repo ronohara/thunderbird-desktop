@@ -989,7 +989,14 @@ Key::usable_for(pgp_op_t op, bool if_secret) const
     case PGP_OP_VERIFY:
         return can_sign() && valid();
     case PGP_OP_ADD_USERID:
-        return is_primary() && can_sign() && (if_secret || has_secret());
+        /* A user ID binding is a certification for the same reason a subkey
+         * binding is: RFC 4880 s5.2.3.21 gives certify and sign separate bits,
+         * and the signature that makes a user ID real is a self-certification
+         * by the primary key. Requiring can_sign() excluded certify-only
+         * primaries, which is the structure GnuPG recommends and the one
+         * rnp_op_generate_* can now produce. */
+        return is_primary() && (can_certify() || can_sign()) &&
+               (if_secret || has_secret());
     case PGP_OP_ENCRYPT:
         return can_encrypt() && valid();
     default:

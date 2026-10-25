@@ -6439,6 +6439,14 @@ export var RNP = {
    * @returns {boolean} - true if a subkey may be added
    */
   canAddSubkey(primaryHandle) {
+    // A handle for a key that is not in the ring is not null, it is invalid,
+    // and asking it for secret material throws rather than answering. Checked
+    // here because every caller reaches this with a handle it did not
+    // necessarily obtain from a successful lookup.
+    if (!primaryHandle || primaryHandle.isNull()) {
+      return false;
+    }
+
     // The secret key material of the primary key is required, because
     // the new subkey must be bound to the primary key by a signature.
     if (
@@ -6697,6 +6705,284 @@ export var RNP = {
       ...spec,
       expirySeconds,
     });
+  },
+
+  /**
+   * Add a user ID to a primary key, signing the binding.
+   *
+   * Item 69. Until this existed a second address could not be added to a key
+   * from inside Thunderbird at all: the only way was to generate a new key or
+   * to use GnuPG.
+   *
+   * `rnp_key_add_uid` signs the binding itself, which is the point rather than
+   * a convenience. A user ID with no self-certification is a string attached
+   * to a key; no other client accepts it, and the key's own validity does not
+   * extend to it. The wrapper therefore does not offer an unsigned variant.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {string} userId - The user ID, conventionally "Name <address>".
+   * @param {object} [options]
+   * @param {integer} [options.expirySeconds=0] - Seconds until the user ID
+   *   expires, measured from the key's creation. 0 for never.
+   * @param {boolean} [options.makePrimary=false] - Ask for this user ID to
+   *   become the primary one.
+   * @returns {Promise<boolean>} true if the user ID was added.
+   */
+  async addUserId(primaryFpr, userId, options = {}) {
+    const expirySeconds = options.expirySeconds ?? 0;
+    if (!Number.isInteger(expirySeconds) || expirySeconds < 0) {
+      throw new Error(`invalid expirySeconds ${expirySeconds}`);
+    }
+    const trimmed = String(userId ?? "").trim();
+    // RNP would accept almost any string; the check is here because a user ID
+    // that is not "Name <address>" is accepted by the library and then matches
+    // no address at all, which is worse than refusing it.
+    if (!/^[^<>]+<[^<>@\s]+@[^<>@\s]+>$/.test(trimmed)) {
+      throw new Error(`invalid user ID: ${trimmed}`);
+    }
+
+    // Checked before the tracker is built, because constructing one for a
+    // fingerprint that is not in the ring throws from `available()` rather
+    // than reporting absence.
+    if (!this.canAddSubkeyByFpr(primaryFpr)) {
+      return false;
+    }
+
+    const tracker =
+      RnpPrivateKeyUnlockTracker.constructFromFingerprint(primaryFpr);
+    try {
+      if (!tracker.available()) {
+        return false;
+      }
+      if (!this.canAddSubkey(tracker.getHandle())) {
+        // Same precondition as adding a subkey: the primary must hold its
+        // secret material and be neither revoked nor expired, because the
+        // binding has to be signed by it.
+        return false;
+      }
+
+      tracker.setAllowPromptingUserForPassword(true);
+      tracker.setAllowAutoUnlockWithCachedPasswords(true);
+      tracker.setPasswordCache({ passwords: [] });
+      await tracker.unlock();
+      if (!tracker.isUnlocked()) {
+        return false;
+      }
+
+      // key_flags is 0: RFC 4880 s5.2.3.21 treats that as "no statement", so
+      // adding a user ID leaves the key's usages exactly as they were.
+      if (
+        RNPLib.rnp_key_add_uid(
+          tracker.getHandle(),
+          trimmed,
+          "SHA256",
+          expirySeconds,
+          0,
+          !!options.makePrimary
+        )
+      ) {
+        throw new Error("rnp_key_add_uid failed");
+      }
+    } finally {
+      tracker.release();
+    }
+
+    await this.saveKeyRings();
+    return true;
+  },
+
+  /**
+   * Make one of a key's user IDs the primary one.
+   *
+   * The change is a self-certification: RNP gives an editable certification,
+   * this sets the flag on it, and signing applies it. Nothing on disk changes
+   * until the sign, which is why the three steps are one method rather than
+   * three the caller could forget to finish.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {string} userId - The user ID to make primary.
+   * @returns {Promise<boolean>} true if it was changed.
+   */
+  async setPrimaryUserId(primaryFpr, userId) {
+    return this._editSelfCertification(
+      primaryFpr,
+      userId,
+      "rnp_key_signature_set_primary_uid",
+      sig => RNPLib.rnp_key_signature_set_primary_uid(sig, true)
+    );
+  },
+
+  /**
+   * Change which usages a key allows.
+   *
+   * RNP does not check that the flags suit the key's algorithm -- an
+   * encryption-only key can be marked for signing, and the result is a key
+   * that fails when used rather than when changed. The caller is responsible
+   * for offering only what makes sense, which is why the UI presents the
+   * key's current usages rather than a free choice.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {string} userId - The user ID whose certification carries the flags.
+   * @param {integer} flags - RFC 4880 key-usage bit field.
+   * @returns {Promise<boolean>} true if it was changed.
+   */
+  async setKeyFlags(primaryFpr, userId, flags) {
+    if (!Number.isInteger(flags) || flags <= 0 || flags > 0x0f) {
+      throw new Error(`invalid key flags ${flags}`);
+    }
+    return this._editSelfCertification(
+      primaryFpr,
+      userId,
+      "rnp_key_signature_set_key_flags",
+      sig => RNPLib.rnp_key_signature_set_key_flags(sig, flags)
+    );
+  },
+
+  /**
+   * Runs one of the `rnp_key_signature_set_*` edits over a user ID's
+   * certification, signs it, and saves.
+   *
+   * Shared by the two callers so the create-sign-save sequence exists once. A
+   * setter that was applied but never signed would look successful and leave
+   * the key unchanged, which is the failure mode this shape prevents.
+   *
+   * @param {string} primaryFpr - Fingerprint of the primary key.
+   * @param {string} userId - The user ID whose certification to edit.
+   * @param {string} what - Name of the edit, for the error message.
+   * @param {Function} apply - Receives the signature handle and returns the
+   *   RNP result code for the edit.
+   * @returns {Promise<boolean>} true if the edit was applied and saved.
+   */
+  async _editSelfCertification(primaryFpr, userId, what, apply) {
+    // Checked before the tracker is built, because constructing one for a
+    // fingerprint that is not in the ring throws from `available()` rather
+    // than reporting absence.
+    if (!this.canAddSubkeyByFpr(primaryFpr)) {
+      return false;
+    }
+
+    const tracker =
+      RnpPrivateKeyUnlockTracker.constructFromFingerprint(primaryFpr);
+    try {
+      if (!tracker.available()) {
+        return false;
+      }
+      if (!this.canAddSubkey(tracker.getHandle())) {
+        return false;
+      }
+
+      tracker.setAllowPromptingUserForPassword(true);
+      tracker.setAllowAutoUnlockWithCachedPasswords(true);
+      tracker.setPasswordCache({ passwords: [] });
+      await tracker.unlock();
+      if (!tracker.isUnlocked()) {
+        return false;
+      }
+
+      const uidHandle = this._findUidHandle(tracker.getHandle(), userId);
+      if (!uidHandle) {
+        return false;
+      }
+
+      const sig = new RNPLib.rnp_signature_handle_t();
+      try {
+        // The third argument is the certification *type*, not a hash, and it
+        // has to be a null pointer -- not an empty string -- for the library
+        // to choose. RNP tests `!type` first, and a JS "" becomes a pointer to
+        // a NUL byte rather than NULL, so the lookup that follows rejects it.
+        // Both mistakes were made here before this comment existed.
+        if (
+          RNPLib.rnp_key_certification_create(
+            tracker.getHandle(),
+            uidHandle,
+            null,
+            sig.address()
+          )
+        ) {
+          throw new Error("rnp_key_certification_create failed");
+        }
+        if (apply(sig)) {
+          throw new Error(`${what} failed`);
+        }
+        if (RNPLib.rnp_key_signature_sign(sig)) {
+          throw new Error("rnp_key_signature_sign failed");
+        }
+      } finally {
+        RNPLib.rnp_signature_handle_destroy(sig);
+        RNPLib.rnp_uid_handle_destroy(uidHandle);
+      }
+    } finally {
+      tracker.release();
+    }
+
+    await this.saveKeyRings();
+    return true;
+  },
+
+  /**
+   * Finds a user ID's handle by its text.
+   *
+   * Compared on the address rather than the whole string: "Name <a@b>" and
+   * "a@b" are the same user ID to every reader that matters, and a caller
+   * working from an address should not have to reproduce the name.
+   *
+   * @param {rnp_key_handle_t} keyHandle
+   * @param {string} userId
+   * @returns {?rnp_uid_handle_t} The handle, which the caller must destroy.
+   */
+  _findUidHandle(keyHandle, userId) {
+    const wanted = String(userId ?? "")
+      .trim()
+      .toLowerCase();
+    if (!wanted) {
+      return null;
+    }
+
+    const count = new lazy.ctypes.size_t();
+    if (RNPLib.rnp_key_get_uid_count(keyHandle, count.address())) {
+      throw new Error("rnp_key_get_uid_count failed");
+    }
+
+    // The text is read through `rnp_key_get_uid_at`, which takes the key and
+    // an index; `rnp_uid_get_data` would be the direct route but is not bound,
+    // and binding it for this would be a sixth binding for no gain.
+    for (let i = 0; i < count.value; i++) {
+      const text = new lazy.ctypes.char.ptr();
+      if (RNPLib.rnp_key_get_uid_at(keyHandle, i, text.address())) {
+        throw new Error("rnp_key_get_uid_at failed");
+      }
+      const text_ = text.readStringReplaceMalformed().trim().toLowerCase();
+      RNPLib.rnp_buffer_destroy(text);
+
+      if (
+        text_ != wanted &&
+        this._emailOfUid(text_) != this._emailOfUid(wanted)
+      ) {
+        continue;
+      }
+
+      const uid = new RNPLib.rnp_uid_handle_t();
+      if (RNPLib.rnp_key_get_uid_handle_at(keyHandle, i, uid.address())) {
+        throw new Error("rnp_key_get_uid_handle_at failed");
+      }
+      return uid;
+    }
+    return null;
+  },
+
+  /**
+   * The address inside a user ID, or the string itself when there is none.
+   *
+   * `getEmailWithoutBrackets` handles "<a@b>" but not "Name <a@b>", which is
+   * the common form, so it is not enough for matching a user ID against an
+   * address.
+   *
+   * @param {string} userId
+   * @returns {string}
+   */
+  _emailOfUid(userId) {
+    const parsed = lazy.EnigmailFuncs.getEmailFromUserID(userId);
+    return (parsed || userId).trim().toLowerCase();
   },
 
   /**

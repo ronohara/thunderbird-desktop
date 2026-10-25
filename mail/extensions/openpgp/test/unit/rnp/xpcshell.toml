@@ -86,3 +86,5 @@ skip-if = ["os != 'linux'"]
 ["test_uid.js"]
 
 ["test_unlockTracker.js"]
+
+["test_userIds.js"]

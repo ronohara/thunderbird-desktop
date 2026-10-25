@@ -71,7 +71,7 @@ vendoring:
     - ../patches/rnp/pr2385.patch
     - ../patches/rnp/pr2391.patch
     - ../patches/rnp/upstream-pad-rsa-to-modulus.patch
-    - ../patches/rnp/certify-only-primary-add-subkey.patch
+    - ../patches/rnp/certify-only-primary.patch
 
   update-actions:
     - action: replace-in-file-regex

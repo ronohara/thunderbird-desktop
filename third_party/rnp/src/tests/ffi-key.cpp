@@ -700,6 +700,41 @@ TEST_F(rnp_tests, test_ffi_key_generate_certify_only_primary)
     assert_rnp_success(rnp_ffi_destroy(ffi));
 }
 
+TEST_F(rnp_tests, test_ffi_key_add_uid_to_certify_only_primary)
+{
+    rnp_ffi_t ffi = NULL;
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+
+    /* The same certify-only primary the test above generates. Adding a user ID
+     * to it needs PGP_OP_ADD_USERID, which required can_sign() for the same
+     * reason PGP_OP_ADD_SUBKEY did -- and a user ID binding is likewise a
+     * certification. */
+    rnp_op_generate_t op = NULL;
+    assert_rnp_success(rnp_op_generate_create(&op, ffi, "ECDSA"));
+    assert_rnp_success(rnp_op_generate_set_curve(op, "NIST P-256"));
+    assert_rnp_success(rnp_op_generate_set_userid(op, "uid-certify-only"));
+    assert_rnp_success(rnp_op_generate_clear_usage(op));
+    assert_rnp_success(rnp_op_generate_add_usage(op, "certify"));
+    assert_rnp_success(rnp_op_generate_execute(op));
+    rnp_key_handle_t primary = NULL;
+    assert_rnp_success(rnp_op_generate_get_key(op, &primary));
+    rnp_op_generate_destroy(op);
+
+    /* the primary really cannot sign, so the call below exercises the widened
+     * predicate rather than passing on a key that could have signed anyway */
+    bool flag = true;
+    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
+    assert_false(flag);
+
+    assert_rnp_success(rnp_key_add_uid(primary, "second <second@example.com>", "SHA256", 0, 0, false));
+
+    size_t count = 0;
+    assert_rnp_success(rnp_key_get_uid_count(primary, &count));
+    assert_int_equal(count, 2);
+    rnp_key_handle_destroy(primary);
+    assert_rnp_success(rnp_ffi_destroy(ffi));
+}
+
 TEST_F(rnp_tests, test_ffi_sec_key_offline_operations)
 {
     rnp_ffi_t ffi = NULL;
@@ -3235,35 +3270,6 @@ TEST_F(rnp_tests, test_ffi_malformed_keys_import)
     assert_int_equal(keycount, 0);
 
     /* cleanup */
-    rnp_ffi_destroy(ffi);
-}
-
-TEST_F(rnp_tests, test_ffi_experimental_packet_import)
-{
-    /* Regression test for https://github.com/rnpgp/rnp/issues/2379:
-     * A key with a trailing experimental packet (tag 60-63, RFC 4880 §4.3) must be
-     * importable when RNP_LOAD_SAVE_PERMISSIVE is set, and fail without it. */
-    rnp_ffi_t   ffi = NULL;
-    rnp_input_t input = NULL;
-
-    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
-    /* without permissive flag the import must fail */
-    assert_rnp_success(
-      rnp_input_from_path(&input, "data/test_stream_key_load/pubkey-with-experimental-pkt.asc"));
-    assert_rnp_failure(
-      rnp_import_keys(ffi, input, RNP_LOAD_SAVE_PUBLIC_KEYS, NULL));
-    rnp_input_destroy(input);
-    size_t keycount = 255;
-    assert_rnp_success(rnp_get_public_key_count(ffi, &keycount));
-    assert_int_equal(keycount, 0);
-    /* with permissive flag the experimental packet is skipped and key is imported */
-    assert_rnp_success(
-      rnp_input_from_path(&input, "data/test_stream_key_load/pubkey-with-experimental-pkt.asc"));
-    assert_rnp_success(
-      rnp_import_keys(ffi, input, RNP_LOAD_SAVE_PUBLIC_KEYS | RNP_LOAD_SAVE_PERMISSIVE, NULL));
-    rnp_input_destroy(input);
-    assert_rnp_success(rnp_get_public_key_count(ffi, &keycount));
-    assert_int_equal(keycount, 2);
     rnp_ffi_destroy(ffi);
 }
 

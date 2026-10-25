@@ -24,7 +24,7 @@ vendoring:
   tracking: commit
 
   patches:
-    - ../patches/rnp_experimental/certify-only-primary-add-subkey.patch
+    - ../patches/rnp_experimental/certify-only-primary.patch
 
   skip-vendoring-steps:
     - hg-add

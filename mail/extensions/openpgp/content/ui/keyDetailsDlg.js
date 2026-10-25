@@ -359,6 +359,133 @@ async function addPQCSubkey() {
   onDataModified();
 }
 
+/**
+ * Item 69: the user-ID controls.
+ *
+ * Shown only for a key this profile holds the secret material for, because
+ * adding a user ID means signing a binding with the primary key, and which
+ * user ID is primary is a self-certification. A key held only in GnuPG is
+ * GnuPG's to edit; the external path manages user IDs with `--quick-add-uid`.
+ *
+ * @param {object} keyObj - The key being shown.
+ */
+function updateUserIdButtons(keyObj) {
+  const canEdit = keyObj?.secretAvailable && keyObj.keyTrust != "r";
+  document.getElementById("addUserIdButton").hidden = !canEdit;
+  document.getElementById("makePrimaryUidButton").hidden = !canEdit;
+
+  if (!canEdit) {
+    return;
+  }
+
+  // "Make primary" needs a selection, and is pointless on the one that is
+  // already primary. Re-read on every selection change rather than once.
+  const list = document.getElementById("userIds");
+  const button = document.getElementById("makePrimaryUidButton");
+  const refresh = () => {
+    const selected = list.selectedItem;
+    button.disabled = !selected || selected.label == keyObj.userId;
+  };
+  list.addEventListener("select", refresh);
+  refresh();
+}
+
+/**
+ * @returns {?string} The user ID selected in the list, or null.
+ */
+function selectedUserId() {
+  const list = document.getElementById("userIds");
+  return list.selectedItem?.label ?? null;
+}
+
+/**
+ * Adds a user ID, asking for it first.
+ *
+ * The prompt is the only place a user can type the ID, so it is also where a
+ * malformed one is caught: `RNP.addUserId()` refuses an ID that is not
+ * "Name <address>" rather than writing something that matches no address.
+ */
+async function addUserId() {
+  const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+  if (!keyObj?.secretAvailable) {
+    return;
+  }
+
+  const value = { value: "" };
+  if (
+    !Services.prompt.prompt(
+      window,
+      l10n.formatValueSync("openpgp-key-details-add-uid-title"),
+      l10n.formatValueSync("openpgp-key-details-add-uid-prompt"),
+      value,
+      null,
+      { value: false }
+    )
+  ) {
+    return;
+  }
+
+  let added = false;
+  try {
+    added = await RNP.addUserId(keyObj.fpr, value.value.trim());
+  } catch (e) {
+    console.warn("Adding a user ID FAILED!", e);
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-add-uid-failed")
+    );
+    return;
+  }
+
+  if (added) {
+    onDataModified();
+  }
+}
+
+/**
+ * Makes the selected user ID the primary one.
+ *
+ * Confirmed, because it is not cosmetic: the primary user ID is the one other
+ * clients display, and the address a key is listed under changes with it.
+ */
+async function makePrimaryUserId() {
+  const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
+  const userId = selectedUserId();
+  if (!keyObj?.secretAvailable || !userId) {
+    return;
+  }
+
+  if (
+    !Services.prompt.confirm(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-make-primary-confirm", {
+        userId,
+      })
+    )
+  ) {
+    return;
+  }
+
+  let changed = false;
+  try {
+    changed = await RNP.setPrimaryUserId(keyObj.fpr, userId);
+  } catch (e) {
+    console.warn("Changing the primary user ID FAILED!", e);
+    Services.prompt.alert(
+      window,
+      null,
+      l10n.formatValueSync("openpgp-key-details-make-primary-failed")
+    );
+    return;
+  }
+
+  if (changed) {
+    onDataModified();
+  }
+}
+
 async function refreshOnline() {
   const keyObj = EnigmailKeyRing.getKeyById(gKeyId);
   if (!keyObj) {
@@ -885,6 +1012,8 @@ async function createUidData(keyDetails) {
       uidList.appendItem(uidStr);
     }
   }
+
+  updateUserIdButtons(keyDetails);
 
   if (gModePersonal) {
     document.getElementById("emailAddressesTab").hidden = true;

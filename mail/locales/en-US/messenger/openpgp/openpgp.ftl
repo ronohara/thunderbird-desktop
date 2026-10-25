@@ -315,6 +315,23 @@ openpgp-ign-addr-intro =
 openpgp-key-details-doc-title = Key Properties
 openpgp-key-details-signatures-tab =
     .label = Certifications
+# Item 69: user ID management. "Add" signs a self-certification with the
+# primary key, and "make primary" changes which ID other clients display -- the
+# second is confirmed because it changes the address the key is listed under.
+openpgp-key-details-add-uid =
+    .label = Add User ID…
+    .accesskey = A
+openpgp-key-details-make-primary-uid =
+    .label = Make Primary
+    .accesskey = M
+openpgp-key-details-add-uid-title = Add a user ID
+openpgp-key-details-add-uid-prompt = Enter the new user ID, in the form Name ‹address›. It is signed with this key, so other people can verify it.
+openpgp-key-details-add-uid-failed = The user ID could not be added. The key may be unavailable, or the user ID may already be on it.
+# Variables:
+# $userId (String) - The user ID about to become primary.
+openpgp-key-details-make-primary-confirm = Make "{ $userId }" the primary user ID? Other programs will show this key under that address.
+openpgp-key-details-make-primary-failed = The primary user ID could not be changed.
+
 openpgp-key-details-structure-tab =
     .label = Structure
 openpgp-key-details-uid-certified-col =
@@ -556,8 +573,20 @@ openpgp-acceptance-export-title = Export key trust decisions
 openpgp-acceptance-import-title = Import key trust decisions
 openpgp-acceptance-file-filter = Key trust decisions
 openpgp-acceptance-export-done = Your key trust decisions have been saved.
+
+# Variables:
+# $error (String) - What went wrong, from the file system or the export itself.
 openpgp-acceptance-export-failed = The key trust decisions could not be saved: { $error }
+
+# Variables:
+# $added (Number) - Judgments this profile did not have.
+# $replaced (Number) - Judgments that differed and were replaced.
+# $kept (Number) - Judgments this profile already had, and kept.
+# $skipped (Number) - Entries in the file that were malformed or unrecognised.
 openpgp-acceptance-import-done = Imported: { $added } added, { $replaced } replaced, { $kept } kept, { $skipped } skipped. A decision already made on this computer is never removed by an import.
+
+# Variables:
+# $error (String) - Why the file could not be read or parsed.
 openpgp-acceptance-import-failed = The key trust decisions could not be imported: { $error }
 
 openpgp-key-remove-external =
@@ -987,7 +1016,7 @@ dlg-button-skip = &Skip
 #
 # Variables:
 # $keys (Number) - How many secret keys live only in this profile.
-openpgp-exposure-internal-key = This profile keeps { $keys } OpenPGP secret key(s) in Thunderbird's own store, which is easier to attack than a GnuPG keyring. Moving your keys to GnuPG protects them with its own, stronger passphrase handling.
-openpgp-exposure-credentials = This profile saves passwords and certificates in Thunderbird's own store. Setting a strong Primary Password protects them with a derivation comparable to GnuPG's.
+openpgp-exposure-internal-key = This profile keeps { $keys } OpenPGP secret key(s) in Thunderbird’s own store, which is easier to attack than a GnuPG keyring. Moving your keys to GnuPG protects them with its own, stronger passphrase handling.
+openpgp-exposure-credentials = This profile saves passwords and certificates in Thunderbird’s own store. Setting a strong Primary Password protects them with a derivation comparable to GnuPG’s.
 openpgp-exposure-not-now = Not now
 openpgp-exposure-dismiss = Do not ask again for now

@@ -1451,6 +1451,93 @@ function enableRNPLibJS() {
       rnp_uid_handle_t
     ),
 
+    /**
+     * Add a user ID to a key, signing the binding in the same call.
+     *
+     * Item 69. The binding signature is what makes a user ID real: an
+     * unsigned one is a string attached to a key and nothing more, and no
+     * other client would accept it. `hash` names the digest for that binding;
+     * `key_flags` is zero, which means "leave the key's usages as they are"
+     * (RFC 4880 s5.2.3.21), and `primary` asks for the new user ID to become
+     * the primary one.
+     */
+    rnp_key_add_uid: librnp.declare(
+      "rnp_key_add_uid",
+      abi,
+      rnp_result_t,
+      rnp_key_handle_t,
+      ctypes.char.ptr,
+      ctypes.char.ptr,
+      ctypes.uint32_t,
+      ctypes.uint8_t,
+      ctypes.bool
+    ),
+
+    /**
+     * Create an editable certification signature over a user ID.
+     *
+     * The third argument is the certification *type* -- "positive", "generic",
+     * "persona", "casual" -- and an empty string asks the library to choose
+     * (positive for a self-certification). It is not a hash, and passing one
+     * is accepted by the signature and refused by the library.
+     *
+     * The two `rnp_key_signature_set_*` calls below operate on one of these,
+     * not on a key, so a binding for this is a precondition for using them
+     * rather than a separate feature.
+     */
+    rnp_key_certification_create: librnp.declare(
+      "rnp_key_certification_create",
+      abi,
+      rnp_result_t,
+      rnp_key_handle_t,
+      rnp_uid_handle_t,
+      ctypes.char.ptr,
+      rnp_signature_handle_t.ptr
+    ),
+
+    /**
+     * Mark the certification's user ID as primary, or not.
+     *
+     * Operates on the editable signature created above. RNP does not check
+     * that the change suits the key -- RFC 4880 leaves "primary" as a flag on
+     * the self-certification -- so a caller must sign and save afterwards.
+     */
+    rnp_key_signature_set_primary_uid: librnp.declare(
+      "rnp_key_signature_set_primary_uid",
+      abi,
+      rnp_result_t,
+      rnp_signature_handle_t,
+      ctypes.bool
+    ),
+
+    /**
+     * Set a key's allowed usages from a certification.
+     *
+     * `flags` is the RFC 4880 key-usage bit field. RNP explicitly does not
+     * validate it against what the key's algorithm can do, so the caller must
+     * check before offering the choice.
+     */
+    rnp_key_signature_set_key_flags: librnp.declare(
+      "rnp_key_signature_set_key_flags",
+      abi,
+      rnp_result_t,
+      rnp_signature_handle_t,
+      ctypes.uint32_t
+    ),
+
+    /**
+     * Sign an editable signature and apply it to the key.
+     *
+     * The last step of every `rnp_key_signature_set_*` change: without it the
+     * edits are held in memory and the key on disk is unchanged.
+     */
+    rnp_key_signature_sign: librnp.declare(
+      "rnp_key_signature_sign",
+      abi,
+      rnp_result_t,
+      rnp_signature_handle_t
+    ),
+
     rnp_key_remove_signatures: librnp.declare(
       "rnp_key_remove_signatures",
       abi,

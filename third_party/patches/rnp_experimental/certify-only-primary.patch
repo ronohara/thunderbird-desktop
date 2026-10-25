@@ -1,0 +1,168 @@
+From 99629bc7728c8327d8dcd5b5de44cc625dc584cf Mon Sep 17 00:00:00 2001
+From: Ron OHara <rono.ohara54@gmail.com>
+Date: Sun, 25 Oct 2026 13:43:42 +0700
+Subject: [PATCH] Allow certify-only primary keys to gain subkeys and user IDs
+
+Both PGP_OP_ADD_SUBKEY and PGP_OP_ADD_USERID required can_sign(), which excluded
+keys whose primary carries only the certify flag -- the structure `gpg
+--quick-generate-key ... cert` produces and which rnp_op_generate_* can now
+itself produce, so that the certificate key can be kept offline while everyday
+signing happens on a rotatable subkey.
+
+Neither operation is a data signature. A subkey binding and a user ID binding
+are both certifications: RFC 4880 s5.2.3.21 gives certify and sign separate
+bits, and the signature that makes either real is made by the primary key acting
+as a certifier. Nothing below either check requires the ability to sign a
+message -- add_sub_binding, sign_subkey_binding and sign_binding each verify
+only that the caller is a primary key.
+
+So the predicate becomes (can_certify() || can_sign()) in both places. can_sign()
+is kept alongside can_certify() so the change only admits keys that were
+previously refused; nothing that worked before stops working.
+
+gpg --quick-add-key and --quick-add-uid both do this to such a key without
+difficulty, which is the behaviour being matched.
+---
+ src/lib/key.cpp       | 18 ++++++++-
+ src/tests/ffi-key.cpp | 89 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 105 insertions(+), 2 deletions(-)
+
+diff --git a/src/lib/key.cpp b/src/lib/key.cpp
+index 5162d78b..759fcd54 100644
+--- a/src/lib/key.cpp
++++ b/src/lib/key.cpp
+@@ -968,7 +968,14 @@ Key::usable_for(pgp_op_t op, bool if_secret) const
+ {
+     switch (op) {
+     case PGP_OP_ADD_SUBKEY:
+-        return is_primary() && can_sign() && (if_secret || has_secret());
++        /* A subkey binding signature is a certification, not a data
++         * signature: RFC 4880 s5.2.3.21 gives certify and sign separate bits,
++         * and a certify-only primary is the structure GnuPG recommends so the
++         * certificate key can stay offline. Testing can_sign() alone refused
++         * those keys. can_sign() is still accepted so nothing that worked
++         * before stops working. */
++        return is_primary() && (can_certify() || can_sign()) &&
++               (if_secret || has_secret());
+     case PGP_OP_SIGN:
+         return can_sign() && valid() && (if_secret || has_secret());
+     case PGP_OP_CERTIFY:
+@@ -982,7 +989,14 @@ Key::usable_for(pgp_op_t op, bool if_secret) const
+     case PGP_OP_VERIFY:
+         return can_sign() && valid();
+     case PGP_OP_ADD_USERID:
+-        return is_primary() && can_sign() && (if_secret || has_secret());
++        /* A user ID binding is a certification for the same reason a subkey
++         * binding is: RFC 4880 s5.2.3.21 gives certify and sign separate bits,
++         * and the signature that makes a user ID real is a self-certification
++         * by the primary key. Requiring can_sign() excluded certify-only
++         * primaries, which is the structure GnuPG recommends and the one
++         * rnp_op_generate_* can now produce. */
++        return is_primary() && (can_certify() || can_sign()) &&
++               (if_secret || has_secret());
+     case PGP_OP_ENCRYPT:
+         return can_encrypt() && valid();
+     default:
+diff --git a/src/tests/ffi-key.cpp b/src/tests/ffi-key.cpp
+index 9010999c..655f008c 100644
+--- a/src/tests/ffi-key.cpp
++++ b/src/tests/ffi-key.cpp
+@@ -646,6 +646,95 @@ TEST_F(rnp_tests, test_ffi_key_generate_misc)
+     assert_rnp_success(rnp_ffi_destroy(ffi));
+ }
+ 
++TEST_F(rnp_tests, test_ffi_key_generate_certify_only_primary)
++{
++    rnp_ffi_t ffi = NULL;
++    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
++
++    /* A certify-only primary, as `gpg --quick-generate-key ... cert` produces.
++     * clear_usage is needed first because add_usage only adds to the
++     * algorithm's default set, so an ECDSA primary would otherwise also be
++     * able to sign. */
++    rnp_op_generate_t op = NULL;
++    assert_rnp_success(rnp_op_generate_create(&op, ffi, "ECDSA"));
++    assert_rnp_success(rnp_op_generate_set_curve(op, "NIST P-256"));
++    assert_rnp_success(rnp_op_generate_set_userid(op, "certify-only"));
++    assert_rnp_success(rnp_op_generate_clear_usage(op));
++    assert_rnp_success(rnp_op_generate_add_usage(op, "certify"));
++    assert_rnp_success(rnp_op_generate_set_expiration(op, 0));
++    assert_rnp_success(rnp_op_generate_execute(op));
++    rnp_key_handle_t primary = NULL;
++    assert_rnp_success(rnp_op_generate_get_key(op, &primary));
++    rnp_op_generate_destroy(op);
++
++    bool flag = true;
++    assert_rnp_success(rnp_key_allows_usage(primary, "certify", &flag));
++    assert_true(flag);
++    flag = true;
++    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
++    assert_false(flag);
++
++    /* Adding a signing subkey must succeed: the binding signature is a
++     * certification, and this primary can certify. */
++    rnp_op_generate_t subop = NULL;
++    assert_rnp_success(rnp_op_generate_subkey_create(&subop, ffi, primary, "ECDSA"));
++    assert_rnp_success(rnp_op_generate_set_curve(subop, "NIST P-256"));
++    assert_rnp_success(rnp_op_generate_add_usage(subop, "sign"));
++    assert_rnp_success(rnp_op_generate_set_expiration(subop, 0));
++    assert_rnp_success(rnp_op_generate_execute(subop));
++    rnp_key_handle_t subkey = NULL;
++    assert_rnp_success(rnp_op_generate_get_key(subop, &subkey));
++    rnp_op_generate_destroy(subop);
++
++    /* and the primary's own usage did not widen as a side effect */
++    flag = true;
++    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
++    assert_false(flag);
++
++    bool issub = false;
++    assert_rnp_success(rnp_key_is_sub(subkey, &issub));
++    assert_true(issub);
++
++    rnp_key_handle_destroy(subkey);
++    rnp_key_handle_destroy(primary);
++    assert_rnp_success(rnp_ffi_destroy(ffi));
++}
++
++TEST_F(rnp_tests, test_ffi_key_add_uid_to_certify_only_primary)
++{
++    rnp_ffi_t ffi = NULL;
++    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
++
++    /* The same certify-only primary the test above generates. Adding a user ID
++     * to it needs PGP_OP_ADD_USERID, which required can_sign() for the same
++     * reason PGP_OP_ADD_SUBKEY did -- and a user ID binding is likewise a
++     * certification. */
++    rnp_op_generate_t op = NULL;
++    assert_rnp_success(rnp_op_generate_create(&op, ffi, "ECDSA"));
++    assert_rnp_success(rnp_op_generate_set_curve(op, "NIST P-256"));
++    assert_rnp_success(rnp_op_generate_set_userid(op, "uid-certify-only"));
++    assert_rnp_success(rnp_op_generate_clear_usage(op));
++    assert_rnp_success(rnp_op_generate_add_usage(op, "certify"));
++    assert_rnp_success(rnp_op_generate_execute(op));
++    rnp_key_handle_t primary = NULL;
++    assert_rnp_success(rnp_op_generate_get_key(op, &primary));
++    rnp_op_generate_destroy(op);
++
++    /* the primary really cannot sign, so the call below exercises the widened
++     * predicate rather than passing on a key that could have signed anyway */
++    bool flag = true;
++    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
++    assert_false(flag);
++
++    assert_rnp_success(rnp_key_add_uid(primary, "second <second@example.com>", "SHA256", 0, 0, false));
++
++    size_t count = 0;
++    assert_rnp_success(rnp_key_get_uid_count(primary, &count));
++    assert_int_equal(count, 2);
++    rnp_key_handle_destroy(primary);
++    assert_rnp_success(rnp_ffi_destroy(ffi));
++}
++
+ TEST_F(rnp_tests, test_ffi_sec_key_offline_operations)
+ {
+     rnp_ffi_t ffi = NULL;
+-- 
+2.43.0
+

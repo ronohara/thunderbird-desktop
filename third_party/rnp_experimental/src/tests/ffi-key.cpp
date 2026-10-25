@@ -726,6 +726,41 @@ TEST_F(rnp_tests, test_ffi_key_generate_certify_only_primary)
     assert_rnp_success(rnp_ffi_destroy(ffi));
 }
 
+TEST_F(rnp_tests, test_ffi_key_add_uid_to_certify_only_primary)
+{
+    rnp_ffi_t ffi = NULL;
+    assert_rnp_success(rnp_ffi_create(&ffi, "GPG", "GPG"));
+
+    /* The same certify-only primary the test above generates. Adding a user ID
+     * to it needs PGP_OP_ADD_USERID, which required can_sign() for the same
+     * reason PGP_OP_ADD_SUBKEY did -- and a user ID binding is likewise a
+     * certification. */
+    rnp_op_generate_t op = NULL;
+    assert_rnp_success(rnp_op_generate_create(&op, ffi, "ECDSA"));
+    assert_rnp_success(rnp_op_generate_set_curve(op, "NIST P-256"));
+    assert_rnp_success(rnp_op_generate_set_userid(op, "uid-certify-only"));
+    assert_rnp_success(rnp_op_generate_clear_usage(op));
+    assert_rnp_success(rnp_op_generate_add_usage(op, "certify"));
+    assert_rnp_success(rnp_op_generate_execute(op));
+    rnp_key_handle_t primary = NULL;
+    assert_rnp_success(rnp_op_generate_get_key(op, &primary));
+    rnp_op_generate_destroy(op);
+
+    /* the primary really cannot sign, so the call below exercises the widened
+     * predicate rather than passing on a key that could have signed anyway */
+    bool flag = true;
+    assert_rnp_success(rnp_key_allows_usage(primary, "sign", &flag));
+    assert_false(flag);
+
+    assert_rnp_success(rnp_key_add_uid(primary, "second <second@example.com>", "SHA256", 0, 0, false));
+
+    size_t count = 0;
+    assert_rnp_success(rnp_key_get_uid_count(primary, &count));
+    assert_int_equal(count, 2);
+    rnp_key_handle_destroy(primary);
+    assert_rnp_success(rnp_ffi_destroy(ffi));
+}
+
 TEST_F(rnp_tests, test_ffi_sec_key_offline_operations)
 {
     rnp_ffi_t ffi = NULL;

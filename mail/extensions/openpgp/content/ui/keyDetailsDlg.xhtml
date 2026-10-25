@@ -67,6 +67,27 @@
             flex="1"
           />
 
+          <!--
+            Item 69. Before these, a second address could not be added to a key
+            from inside Thunderbird at all, and which user ID was primary was
+            whatever the key was created with.
+          -->
+          <hbox class="input-container">
+            <button
+              id="addUserIdButton"
+              data-l10n-id="openpgp-key-details-add-uid"
+              oncommand="addUserId()"
+              hidden="hidden"
+            />
+            <button
+              id="makePrimaryUidButton"
+              data-l10n-id="openpgp-key-details-make-primary-uid"
+              oncommand="makePrimaryUserId()"
+              disabled="disabled"
+              hidden="hidden"
+            />
+          </hbox>
+
           <label
             class="key-detail-label"
             data-l10n-id="openpgp-key-details-key-type-label"
