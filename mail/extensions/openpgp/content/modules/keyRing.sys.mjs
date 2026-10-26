@@ -2076,15 +2076,32 @@ export var EnigmailKeyRing = {
    * @param {string} emailAddr - Email address.
    * @param {object} [details] - If not null, receives msg="ProblemNoKey" when
    *   the address has no usable key at all.
+   * @param {object} [options]
+   * @param {boolean} [options.trustKeysForThisMessage] - The composer's
+   *   per-message override (Item 91). Admits a key whose only failing is trust,
+   *   which under the strict policy is `UNKNOWN`, `UNDEFINED` or `MARGINAL`.
+   *   `NEVER` and `INVALID` stay refused: see `isValidityUnjudged()`.
    * @returns {Promise<string[]>} Key IDs (without leading "0x"), candidate
    *   order preserved, no duplicates.
    */
-  async getValidKeysForRecipient(emailAddr, details) {
+  async getValidKeysForRecipient(emailAddr, details, options) {
     const found = [];
     if (!emailAddr) {
       return found;
     }
     emailAddr = emailAddr.toLowerCase();
+
+    const requireTrust = this.requiresTrustedKeys();
+    // Only meaningful where trust is required. Under the permissive policy the
+    // override would be relaxing a question that was never asked, and Item 91
+    // does not even offer the control there.
+    const relaxTrust = requireTrust && !!options?.trustKeysForThisMessage;
+
+    // Item 88f: what was refused, and why, so a caller can say it. Only the
+    // candidates that failed *for trust* are collected -- a key with no
+    // encryption subkey is not something an override can help, so naming it in
+    // a "trust" message would offer an action that cannot work.
+    const refusedForTrust = [];
 
     const seen = new Set();
     const keyList = await this.getCandidateKeysForEmail(emailAddr);
@@ -2094,7 +2111,7 @@ export var EnigmailKeyRing = {
       // build's acceptance row; under the permissive policy it is the row, as
       // before. Item 88c: one question for the policy that asks for judgment,
       // and no change at all for the policy that does not.
-      const acceptanceLevel = this.requiresTrustedKeys()
+      const acceptanceLevel = requireTrust
         ? await this._strictLevelFor(keyObj, emailAddr, false)
         : await this.isValidKeyForRecipient(keyObj, emailAddr, false);
 
@@ -2110,11 +2127,16 @@ export var EnigmailKeyRing = {
       // is unusable for the address (revoked, expired, no encryption subkey, no
       // matching user ID), which is not a trust judgment at all.
       if (
-        !OpenPgpConstants.isValidityAcceptable(
-          acceptanceLevel,
-          this.requiresTrustedKeys()
-        )
+        !OpenPgpConstants.isValidityAcceptable(acceptanceLevel, requireTrust) &&
+        !(relaxTrust && OpenPgpConstants.isValidityUnjudged(acceptanceLevel))
       ) {
+        if (
+          requireTrust &&
+          !relaxTrust &&
+          OpenPgpConstants.isValidityUnjudged(acceptanceLevel)
+        ) {
+          refusedForTrust.push({ keyId: keyObj.keyId, fpr: keyObj.fpr });
+        }
         continue;
       }
       if (seen.has(keyObj.keyId)) {
@@ -2131,9 +2153,20 @@ export var EnigmailKeyRing = {
         // you already have, which the Key Details and Key Manager dialogs can
         // now do. Reporting the second as the first sends a user looking for
         // a key when the key is on their screen.
-        details.msg = this.requiresTrustedKeys()
+        //
+        // The test is whether a key was actually refused for trust, not whether
+        // the strict policy is on. Item 88c keyed this on the policy alone,
+        // which told a user with no key at all that their key was not trusted --
+        // found by Item 88f's control task, which addresses one recipient who
+        // has no key anywhere.
+        details.msg = refusedForTrust.length
           ? "ProblemKeyNotTrusted"
           : "ProblemNoKey";
+        // Only where the reason is trust: an empty array here would say the
+        // address has keys the user could judge, which for "no key" is untrue.
+        if (refusedForTrust.length) {
+          details.trustRefused = refusedForTrust;
+        }
       }
       lazy.log.debug(
         `Found no valid encryption key with enough trust level for ${emailAddr}`
@@ -2358,9 +2391,13 @@ export var EnigmailKeyRing = {
    * @param {object} details.errArray.msg - Related error.
    * @param {object} details.keysByAddr - Filled in with address -> string[]
    *   of usable key IDs. Absent from errArray means at least one key.
+   * @param {object} [options] - Forwarded to the per-address resolver. Item
+   *   88e: `trustKeysForThisMessage` is the composer's per-message override,
+   *   and it also applies to a rule that demands encryption, which is the same
+   *   trust question asked by a different route.
    * @returns {boolean} true if at least one address has no usable key.
    */
-  async getValidKeysForAllRecipients(addresses, details) {
+  async getValidKeysForAllRecipients(addresses, details, options) {
     if (!addresses) {
       return null;
     }
@@ -2369,6 +2406,11 @@ export var EnigmailKeyRing = {
     if (details) {
       details.errArray = [];
       details.keysByAddr = {};
+      // Item 88f: every address whose refusal was about trust, with the keys
+      // that were refused, so the composer can name them and offer the
+      // per-message decision. Absent means no such address, which is different
+      // from an empty list of them.
+      details.trustRefused = [];
     }
     for (let i = 0; i < addresses.length; i++) {
       let addr = addresses[i];
@@ -2438,7 +2480,12 @@ export var EnigmailKeyRing = {
               // rule's own requirement was judged by the acceptance row while
               // the policy beside it was judged by nothing at all.
               const level = await this._strictLevelFor(key, addr, false);
-              if (!OpenPgpConstants.isValidityTrusted(level)) {
+              const trusted =
+                OpenPgpConstants.isValidityTrusted(level) ||
+                (this.requiresTrustedKeys() &&
+                  options?.trustKeysForThisMessage &&
+                  OpenPgpConstants.isValidityUnjudged(level));
+              if (!trusted) {
                 foundError = true;
                 keyMissing = true;
                 if (details) {
@@ -2450,6 +2497,18 @@ export var EnigmailKeyRing = {
                     addr,
                     msg: "ProblemRuleRequiresUntrustedKey",
                   });
+                  // The same trust question the policy asks, so the same
+                  // per-message answer reaches it (Items 88e and 88f).
+                  if (
+                    !options?.trustKeysForThisMessage &&
+                    OpenPgpConstants.isValidityUnjudged(level)
+                  ) {
+                    details.trustRefused.push({
+                      addr,
+                      keyId: key.keyId,
+                      fpr: key.fpr,
+                    });
+                  }
                 }
                 lazy.log.warn(
                   `Rule requires encryption to ${addr}, but ${key.fpr} is ` +
@@ -2485,10 +2544,16 @@ export var EnigmailKeyRing = {
       var addrErrDetails = {};
       const foundKeyIds = await this.getValidKeysForRecipient(
         addr,
-        addrErrDetails
+        addrErrDetails,
+        options
       );
       if (details && addrErrDetails.msg) {
         errMsg = addrErrDetails.msg;
+      }
+      if (details && addrErrDetails.trustRefused) {
+        for (const refused of addrErrDetails.trustRefused) {
+          details.trustRefused.push({ addr, ...refused });
+        }
       }
       if (details && foundKeyIds.length) {
         details.keysByAddr[addr] = foundKeyIds;
@@ -2903,10 +2968,13 @@ export var EnigmailKeyRing = {
           continue;
         }
       } else {
-        const acceptanceLevel = await this.getKeyAcceptanceLevelForEmail(
-          keyObj,
-          email
-        );
+        // Item 88d: under the strict policy, readiness asks the gate's own
+        // question, so the composer's view and a send cannot disagree about one
+        // key. `allowExpired` is true because the `expired*` readiness values
+        // report expiry separately; false would collapse them into INVALID.
+        const acceptanceLevel = this.requiresTrustedKeys()
+          ? await this._strictLevelFor(keyObj, email, true)
+          : await this.getKeyAcceptanceLevelForEmail(keyObj, email);
         // Named values, not raw numbers. This switch used to read `case 1: case
         // 2:` for accepted and `case -1:` for rejected -- which under GnuPG's
         // numbering would make NEVER (2) "accepted" and leave rejection
@@ -2916,8 +2984,11 @@ export var EnigmailKeyRing = {
         // Item 67's test noticing, not a silent one.
         const { OpenPgpValidity } = OpenPgpConstants;
         switch (acceptanceLevel) {
+          // ULTIMATE reaches here only from GnuPG: a personal key is answered
+          // above, and the acceptance store has no value for it.
           case OpenPgpValidity.UNDEFINED:
-          case OpenPgpValidity.FULL: {
+          case OpenPgpValidity.FULL:
+          case OpenPgpValidity.ULTIMATE: {
             // Under the strict policy an `UNDEFINED` key is not accepted,
             // because the send gate will refuse it. Reporting it as accepted
             // here would have the Key Assistant say the recipient is fine and
@@ -2925,9 +2996,10 @@ export var EnigmailKeyRing = {
             // about one fact, which is the failure this stage keeps meeting.
             // It reads as undecided instead, so the assistant offers to
             // resolve it and accepting it as verified makes it FULL.
-            const accepted =
-              OpenPgpValidity.FULL == acceptanceLevel ||
-              !this.requiresTrustedKeys();
+            const accepted = OpenPgpConstants.isValidityAcceptable(
+              acceptanceLevel,
+              this.requiresTrustedKeys()
+            );
             if (accepted) {
               keyMeta.readiness = isExpired ? "expiredAccepted" : "accepted";
             } else {

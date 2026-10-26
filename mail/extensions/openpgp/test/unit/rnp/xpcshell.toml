@@ -127,6 +127,9 @@ skip-if = ["os != 'linux'"]
 ["test_stage14Verification.js"]
 run-sequentially = true  # writes the profile-global acceptance store and a rules file
 
+["test_strictReadiness.js"]
+run-sequentially = true  # sets gpg ownertrust and writes the profile-global acceptance store
+
 ["test_strip.js"]
 
 ["test_uid.js"]
@@ -138,6 +141,9 @@ run-sequentially = true  # writes the profile-global acceptance store and a rule
 ["test_transferableSecretKey.js"]
 
 ["test_trustProvenance.js"]
+
+["test_trustOverrideGate.js"]
+run-sequentially = true  # writes the profile-global acceptance store
 
 ["test_userIdValidity.js"]
 skip-if = ["os != 'linux'"]

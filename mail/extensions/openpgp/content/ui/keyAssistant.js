@@ -56,6 +56,8 @@ var gKeyAssistant = {
   dialog: null,
   recipients: [],
   currentRecip: null,
+  isSending: false,
+  refusal: null,
 
   /*
    * Variable ignoreExternal should be set to true whenever a
@@ -138,9 +140,15 @@ var gKeyAssistant = {
    *   written recipients.
    * @param {boolean} isSending - If the key assistant was triggered during a
    *   sending attempt.
+   * @param {object} [refusal=null] - Item 88f: the resolver's details from the
+   *   refusal that stopped this send. Its `trustRefused` list is what the trust
+   *   section is built from; anything else in it is already described by the
+   *   issues section.
    */
-  show(recipients, isSending) {
+  show(recipients, isSending, refusal = null) {
     this.recipients = recipients;
+    this.isSending = isSending;
+    this.refusal = refusal;
     this.buildMainView();
     this.resetViews();
 
@@ -643,6 +651,11 @@ var gKeyAssistant = {
 
     this.usableKeys = 0;
     this.problematicKeys = 0;
+    // Item 88f: which addresses are in the issues list, so the trust section
+    // can tell whether it explains all of them. Its heading is "Cannot
+    // Encrypt" and its instruction is to obtain and accept a key, which is the
+    // wrong thing to say when the key is present and unjudged.
+    this.problematicAddresses = [];
     // Item 67: addresses with more than one accepted key. Collected as the loop
     // runs and rendered once at the end, so the section appears only when there
     // is something to say.
@@ -665,6 +678,7 @@ var gKeyAssistant = {
 
           this.addToProblematicList(addr, descriptionDiv, null);
           this.problematicKeys++;
+          this.problematicAddresses.push(addr);
         } else {
           const aliasText = document.createElement("div");
           document.l10n.setAttributes(
@@ -748,6 +762,7 @@ var gKeyAssistant = {
 
           this.addToProblematicList(addr, descriptionDiv, button);
           this.problematicKeys++;
+          this.problematicAddresses.push(addr);
         }
       }
     }
@@ -777,10 +792,98 @@ var gKeyAssistant = {
     }
 
     this.buildMultiKeyNotice();
+    this.buildTrustRefusal();
 
     document.getElementById("sendEncryptedButton").disabled =
       this.problematicKeys || !this.usableKeys;
     this.setMainDisableButton();
+  },
+
+  /**
+   * Item 88f: when the strict policy is the only reason the send stopped, say
+   * so and offer the decision.
+   *
+   * The issues section above already names the recipient, but it can only say
+   * that no *accepted* key was found -- and its heading tells the user to
+   * "obtain and accept a usable key", which is untrue when the key is present
+   * and unjudged. Worse, the only action it offers is to accept the key, which
+   * writes a lasting decision at the moment a message is trying to leave. That
+   * is the reflex the per-message override exists to avoid, so here the
+   * per-message answer is primary and the lasting one is a link.
+   *
+   * The section is built only when the caller passed a refusal, which only the
+   * send path does.
+   */
+  buildTrustRefusal() {
+    const section = document.getElementById("keyAssistantTrustRefusal");
+    const list = document.getElementById("keyAssistantTrustRefusalList");
+    const sendButton = document.getElementById("trustKeysForThisMessageButton");
+    const reviewButton = document.getElementById("trustRefusalReviewButton");
+    list.replaceChildren();
+    section.hidden = true;
+
+    const refused = this.refusal?.trustRefused ?? [];
+    // Only a send refusal has a section to explain. The menu opens this dialog
+    // with no refusal at all, and a caller that passed one outside a send would
+    // be offering to override a policy that is not currently blocking anything.
+    if (!this.isSending || !refused.length) {
+      return;
+    }
+
+    document.l10n.setAttributes(
+      document.getElementById("keyAssistantTrustRefusalHeader"),
+      "openpgp-key-assistant-trust-refusal-header",
+      { count: new Set(refused.map(r => r.addr)).size }
+    );
+    document.l10n.setAttributes(
+      document.getElementById("keyAssistantTrustRefusalDescription"),
+      "openpgp-key-assistant-trust-refusal-description"
+    );
+
+    for (const { addr, keyId, fpr } of refused) {
+      const item = document.createElement("li");
+      document.l10n.setAttributes(
+        item,
+        "openpgp-key-assistant-trust-refusal-entry",
+        { address: addr, fingerprint: fpr ?? "0x" + keyId }
+      );
+      list.appendChild(item);
+    }
+
+    // Assigned rather than added, for the same reason as Item 67's button: this
+    // section is rebuilt on every check and a listener per rebuild accumulates.
+    sendButton.onclick = () => {
+      gTrustKeysForThisMessage = true;
+      goDoCommand("cmd_sendWithCheck");
+      this.close();
+    };
+
+    // One destination, not two: Item 92's owner-trust control routes to Key
+    // Details as well -- "the one editor for a key's trust in both stores" --
+    // so the lasting answer has a single place to be set, and this link goes
+    // there rather than growing a second editor beside it.
+    reviewButton.onclick = () => {
+      EnigmailWindows.openKeyDetails(window, "0x" + refused[0].keyId, true);
+    };
+
+    // When every problem recipient is one of these, the issues section's
+    // heading and instruction are both wrong -- it says to obtain and accept a
+    // key, and this section has just explained that the key is there. Kept when
+    // another address has a different problem, because then it is still true
+    // about that address.
+    const trustAddresses = new Set(refused.map(r => r.addr));
+    const coversEveryIssue = (this.problematicAddresses ?? []).every(a =>
+      trustAddresses.has(a)
+    );
+    if (coversEveryIssue) {
+      document.getElementById("keyAssistantIssues").hidden = true;
+    }
+
+    // The section's own button is the send button for this case. Leaving the
+    // ordinary one visible and disabled beside it would offer a control whose
+    // only job is to say no, which the section has just said in words.
+    document.getElementById("sendEncryptedButton").hidden = true;
+    section.hidden = false;
   },
 
   isAccepted(acc) {

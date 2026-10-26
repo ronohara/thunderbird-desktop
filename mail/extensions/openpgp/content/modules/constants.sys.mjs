@@ -85,6 +85,28 @@ export function isValidityTrusted(level) {
 }
 
 /**
+ * Whether a value says nobody has judged the key, as opposed to judging it
+ * badly.
+ *
+ * This is what the composer's per-message override admits
+ * (`gTrustKeysForThisMessage`, Item 91), and the three values are exactly the
+ * ones that mean "no answer": `UNKNOWN` is nobody looked, `UNDEFINED` is use
+ * without verification, and `MARGINAL` is a web-of-trust level that is not the
+ * user's own judgment. `NEVER` is excluded because it is a decision already
+ * made, and `INVALID` because it is not a trust question at all.
+ *
+ * @param {integer} level - From `isValidKeyForRecipient()` or `_strictLevelFor()`.
+ * @returns {boolean}
+ */
+export function isValidityUnjudged(level) {
+  return (
+    level === OpenPgpValidity.UNKNOWN ||
+    level === OpenPgpValidity.UNDEFINED ||
+    level === OpenPgpValidity.MARGINAL
+  );
+}
+
+/**
  * The single gate the selection paths use, so the policy is applied in one
  * place rather than being restated at each call site.
  *

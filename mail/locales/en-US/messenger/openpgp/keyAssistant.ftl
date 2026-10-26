@@ -58,6 +58,27 @@ openpgp-key-assistant-multi-key-description = This message will be encrypted to 
 
 openpgp-key-assistant-multi-key-rules-button = Open Rules…
 
+## Item 88f: the strict policy refused a key, so the decision is the user’s
+
+# Variables:
+# $count (Number) - How many recipients have a key that has not been judged.
+openpgp-key-assistant-trust-refusal-header =
+    { $count ->
+        [one] One recipient’s key has not been judged
+        *[other] { $count } recipients’ keys have not been judged
+    }
+
+# Variables:
+# $address (String) - The recipient address whose key has not been judged.
+# $fingerprint (String) - The fingerprint of that recipient's key.
+openpgp-key-assistant-trust-refusal-entry = { $address } — key { $fingerprint }
+
+openpgp-key-assistant-trust-refusal-description = You asked to encrypt only to keys you trust. GnuPG has not judged the key above, so the message cannot be sent encrypted to it. You can use it for this message only, or review the key and decide about it for the future.
+
+openpgp-key-assistant-trust-refusal-send-button = Send Encrypted for This Message Only
+
+openpgp-key-assistant-trust-refusal-review-button = Review the Key…
+
 ## Resolve section
 
 # Variables:

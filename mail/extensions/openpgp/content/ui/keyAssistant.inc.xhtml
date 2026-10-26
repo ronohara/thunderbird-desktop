@@ -154,6 +154,35 @@
         data-l10n-id="openpgp-key-assistant-multi-key-rules-button"
       />
     </section>
+
+    <!--
+      Item 88f: the strict policy is the only reason this send stopped. Shown
+      only when the send path passed a refusal, and only for keys refused for
+      trust rather than for being unusable. The per-message decision is the
+      button; the lasting one is a link to Key Details, which is also where
+      Item 92's owner-trust action routes.
+    -->
+    <section
+      id="keyAssistantTrustRefusal"
+      class="margin-top-1em"
+      hidden="hidden"
+    >
+      <p id="keyAssistantTrustRefusalHeader" class="font-bold" />
+      <ul id="keyAssistantTrustRefusalList" class="reset-list key-list" />
+      <p id="keyAssistantTrustRefusalDescription" class="tip-caption" />
+      <div class="container-with-link">
+        <button
+          id="trustKeysForThisMessageButton"
+          class="button button-primary"
+          data-l10n-id="openpgp-key-assistant-trust-refusal-send-button"
+        />
+        <button
+          id="trustRefusalReviewButton"
+          class="button-link"
+          data-l10n-id="openpgp-key-assistant-trust-refusal-review-button"
+        />
+      </div>
+    </section>
   </div><!-- #mainView -->
 
   <menu id="mainButtons" class="dialog-menu-container two-columns">

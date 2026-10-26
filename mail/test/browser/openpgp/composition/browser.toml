@@ -42,4 +42,6 @@ support-files = ["../data/**"]
 
 ["browser_editDraftTemplate.js"]
 
+["browser_trustRefusalPrompt.js"]
+
 ["browser_expiredKey.js"]

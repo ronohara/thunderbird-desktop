@@ -567,7 +567,18 @@ Enigmail.msg = {
       } catch (ex) {}
 
       // Resolve all the email addresses if possible.
-      await EnigmailKeyRing.getValidKeysForAllRecipients(addresses, detailsObj);
+      //
+      // Item 88e: the per-message override reaches the gate here, and this is
+      // the only place the send consults it. Without this argument the composer
+      // honoured `gTrustKeysForThisMessage` in its own readiness check and the
+      // send asked the strict question again from scratch, so a message written
+      // with the override ticked was refused by the gate the menu had just said
+      // was relaxed.
+      await EnigmailKeyRing.getValidKeysForAllRecipients(
+        addresses,
+        detailsObj,
+        { trustKeysForThisMessage: gTrustKeysForThisMessage }
+      );
 
       // Item 89b: a rule can require or forbid encryption, and two rules that
       // contradict each other are not a preference for the program to decide.
@@ -1148,10 +1159,18 @@ Enigmail.msg = {
     }
 
     let cannotEncryptMissingInfo = false;
+    // Item 88f: the refusal itself, kept so the assistant can say why. Without
+    // it every refusal reaches the dialog as "a non-empty errArray" and a user
+    // whose only problem is that GnuPG has not judged a key sees the same
+    // screen as one with no key at all -- and the only way forward offered is
+    // to accept the key, which is a lasting decision taken at the moment a
+    // message is trying to leave.
+    let sendRefusal = null;
     if (gSendEncrypted) {
       const canEncryptDetails = await this.determineSendFlags();
       if (canEncryptDetails.errArray.length != 0) {
         cannotEncryptMissingInfo = true;
+        sendRefusal = canEncryptDetails;
       }
     }
 
@@ -1172,7 +1191,7 @@ Enigmail.msg = {
       sendFlags = rcpt.sendFlags;
 
       if (cannotEncryptMissingInfo) {
-        showMessageComposeSecurityStatus(true);
+        showMessageComposeSecurityStatus(true, sendRefusal);
         return false;
       }
 

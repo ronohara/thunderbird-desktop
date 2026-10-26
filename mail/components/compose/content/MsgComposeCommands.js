@@ -2019,10 +2019,14 @@ function setSecuritySettings(menu_id) {
  *
  * @param {boolean} [isSending=false] - If the key assistant was triggered
  *   during a sending attempt.
+ * @param {object} [refusal=null] - Item 88f: the resolver's details from the
+ *   refusal that stopped a send, so the assistant can say why it stopped. Only
+ *   the send path has one; opening the dialog from the menu passes nothing and
+ *   the assistant shows the ordinary state.
  */
-function showMessageComposeSecurityStatus(isSending = false) {
+function showMessageComposeSecurityStatus(isSending = false, refusal = null) {
   if (gSelectedTechnologyIsPGP) {
-    gKeyAssistant.show(getEncryptionCompatibleRecipients(), isSending);
+    gKeyAssistant.show(getEncryptionCompatibleRecipients(), isSending, refusal);
   } else {
     Recipients2CompFields(gMsgCompose.compFields);
     // Copy current flags to S/MIME composeSecure object.
