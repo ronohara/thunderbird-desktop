@@ -351,6 +351,19 @@ imply_option("MOZ_APP_PROFILE", "ThunderbirdGnuPG", when=(target_is_windows | ta
 
 imply_option("MOZ_APP_PROFILE", "thunderbird-gnupg", when=~target_is_windows & ~target_is_osx & thunderbird_gnupg)
 
+# The remoting name, which is also the *package* name for the .deb and the
+# RPM, and the WM class the window carries. Left unset it would be
+# MOZ_APP_NAME-MOZ_UPDATE_CHANNEL -- `thunderbird-gnupg-default` on this
+# channel -- and a rebuilt package under that name installs *beside* the
+# existing one instead of replacing it, leaving two copies in /usr/lib and two
+# menu entries while the profile silently stays with the old one. Pinned here,
+# the package keeps one identity across channels and `dpkg -i` is an upgrade.
+#
+# Unlike the app name above, this option is env-based, so a mozconfig *can* set
+# it; both spellings carry the same value, and stating it here is what makes the
+# identity travel with the repository rather than with an untracked file.
+imply_option("MOZ_APP_REMOTINGNAME", "thunderbird-gnupg", when=thunderbird_gnupg)
+
 # The binary's name, which is the identity that makes the two packages
 # separately installable rather than merely differently branded. It is implied
 # here, conditionally, because a mozconfig cannot do it: `export
