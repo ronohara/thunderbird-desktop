@@ -30,6 +30,34 @@ openpgp-key-assistant-recipients-description =
 
 openpgp-key-assistant-recipients-description-no-issues = This message can be encrypted. You have usable and accepted keys for all recipients.
 
+## Item 67: more than one acceptable key for an address
+
+# A choice exists and the message does not decide it. Both keys are used, which
+# is safe for a rotation, so this is information rather than a warning -- which
+# is why it is not in the issues section. It stays visible while the assistant
+# is open and says nothing about whether sending is allowed.
+
+# Variables:
+# $count (Number) - How many recipients have more than one accepted key.
+openpgp-key-assistant-multi-key-header =
+    { $count ->
+        [one] One recipient has more than one accepted key
+        *[other] { $count } recipients have more than one accepted key
+    }
+
+# Variables:
+# $address (String) - The recipient address with more than one key.
+# $numKeys (Number) - How many accepted keys the address has.
+openpgp-key-assistant-multi-key-entry =
+    { $numKeys ->
+        [one] { $address } has one accepted key.
+        *[other] { $address } has { $numKeys } accepted keys.
+    }
+
+openpgp-key-assistant-multi-key-description = This message will be encrypted to all of them, so no key is chosen for you. If you want one key used instead, name it in a rule for that address.
+
+openpgp-key-assistant-multi-key-rules-button = Open Rules…
+
 ## Resolve section
 
 # Variables:

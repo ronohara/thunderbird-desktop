@@ -138,6 +138,22 @@
 
       <ul id="keysListValid" class="reset-list key-list" hidden="hidden"></ul>
     </section>
+
+    <!-- Item 67: more than one acceptable key for an address.
+         Information, not a warning: the message is encrypted to all of them, so
+         nothing is being decided for the user. Kept out of the issues section
+         for that reason, because it does not affect whether sending is allowed.
+         (A double hyphen inside an XML comment is illegal, which the parse check
+         caught before the build did.) -->
+    <section id="keyAssistantMultiKey" class="margin-top-1em" hidden="hidden">
+      <p id="keyAssistantMultiKeyHeader" class="font-bold" />
+      <ul id="keysListMultiKey" class="reset-list key-list" />
+      <p id="keyAssistantMultiKeyDescription" class="tip-caption" />
+      <button
+        id="multiKeyRulesButton"
+        data-l10n-id="openpgp-key-assistant-multi-key-rules-button"
+      />
+    </section>
   </div><!-- #mainView -->
 
   <menu id="mainButtons" class="dialog-menu-container two-columns">

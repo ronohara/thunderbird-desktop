@@ -30,6 +30,8 @@ support-files = ["../data/**"]
 
 ["browser_encryptRefusal.js"]
 
+["browser_multiKeyChoice.js"]
+
 ["browser_composeSigned.js"]
 
 ["browser_composeSigned2.js"]

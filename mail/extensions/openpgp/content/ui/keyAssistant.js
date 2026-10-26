@@ -562,6 +562,70 @@ var gKeyAssistant = {
   },
 
   /**
+   * Say, once, that some recipients have more than one accepted key (Item 67).
+   *
+   * **The requirement is that the code does not decide.** Item 27a made a send
+   * encrypt to every acceptable key, so nothing is being chosen behind the
+   * user's back -- but "nothing was decided" is not the same as "nothing was
+   * hidden", and before this the assistant showed a recipient with two keys
+   * exactly as it showed one.
+   *
+   * **Information, not a warning.** It does not disable the send button and does
+   * not appear in the issues section, because a message encrypted to both keys
+   * is correct: during a rotation it is the only way to reach a reader who has
+   * not yet switched. What the user is told is that they *may* narrow it.
+   *
+   * The narrowing mechanism already exists and is not rebuilt here: a rule for
+   * the address names the keys, and `getAliasKeyList()` confines the send path
+   * to them. So the button opens the rules editor rather than inventing a
+   * chooser.
+   */
+  buildMultiKeyNotice() {
+    const section = document.getElementById("keyAssistantMultiKey");
+    const list = document.getElementById("keysListMultiKey");
+    const button = document.getElementById("multiKeyRulesButton");
+
+    const addresses = this.multiKeyAddresses ?? [];
+    if (!addresses.length) {
+      section.hidden = true;
+      return;
+    }
+
+    document.l10n.setAttributes(
+      document.getElementById("keyAssistantMultiKeyHeader"),
+      "openpgp-key-assistant-multi-key-header",
+      { count: addresses.length }
+    );
+    document.l10n.setAttributes(
+      document.getElementById("keyAssistantMultiKeyDescription"),
+      "openpgp-key-assistant-multi-key-description"
+    );
+
+    for (const { address, count } of addresses) {
+      const item = document.createElement("li");
+      document.l10n.setAttributes(
+        item,
+        "openpgp-key-assistant-multi-key-entry",
+        { address, numKeys: count }
+      );
+      list.appendChild(item);
+    }
+
+    // Assigned rather than added as a listener, because the section is rebuilt
+    // on every send check and a listener per rebuild would accumulate.
+    button.onclick = () => {
+      window.openDialog(
+        "chrome://openpgp/content/ui/rulesEditor.xhtml",
+        "openpgpRulesEditor",
+        "dialog,modal,centerscreen,resizable",
+        {}
+      );
+    };
+
+    section.hidden = false;
+  },
+
+  /**
    * Populate the main view of the key assistant with the list of recipients and
    * its keys, separating the recipients that have issues from those without
    * issues.
@@ -574,9 +638,15 @@ var gKeyAssistant = {
     document.getElementById("keysListIssues").replaceChildren();
     document.getElementById("keyAssistantValid").hidden = true;
     document.getElementById("keysListValid").replaceChildren();
+    document.getElementById("keyAssistantMultiKey").hidden = true;
+    document.getElementById("keysListMultiKey").replaceChildren();
 
     this.usableKeys = 0;
     this.problematicKeys = 0;
+    // Item 67: addresses with more than one accepted key. Collected as the loop
+    // runs and rendered once at the end, so the section appears only when there
+    // is something to say.
+    this.multiKeyAddresses = [];
 
     for (const addr of this.recipients) {
       // Fetch all keys for the current recipient.
@@ -610,6 +680,16 @@ var gKeyAssistant = {
         // not alias
 
         const acceptedKeys = keyMetas.filter(k => k.readiness == "accepted");
+        if (acceptedKeys.length > 1) {
+          // Item 67: a choice exists, and this code does not make it. The
+          // message is encrypted to every accepted key -- which is Item 27a's
+          // behaviour and is safe across a rotation -- so what the user needs to
+          // know is that more than one was used and that they can name one.
+          this.multiKeyAddresses.push({
+            address: addr,
+            count: acceptedKeys.length,
+          });
+        }
         if (acceptedKeys.length) {
           // The origin is shown here as well as in the resolve view, because
           // an accepted key never reaches the resolve view -- and a key GnuPG
@@ -695,6 +775,8 @@ var gKeyAssistant = {
         { count: this.usableKeys }
       );
     }
+
+    this.buildMultiKeyNotice();
 
     document.getElementById("sendEncryptedButton").disabled =
       this.problematicKeys || !this.usableKeys;
