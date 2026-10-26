@@ -572,6 +572,89 @@ add_task(async function conflictingRulesAreNotResolved() {
  * than either encrypting to an untrusted key or reporting the address as
  * simply missing a key.
  */
+/**
+ * Item 89b's second half: the question the composer asks is answered in words.
+ *
+ * `resolveForRecipients()` answers in `RuleValue` numbers, and a composer that
+ * compared them would have to know what `2` means -- the mistake this file
+ * records twice. `decidedValueFor()` does the translation, and returns a
+ * decision only when the rules actually make one:
+ *
+ *   - `always` and `never` are decisions;
+ *   - `maybe` is not, because "encrypt if you can" is what the automatic
+ *     behaviour already does;
+ *   - a conflict is not, because choosing a winner is the thing Item 89b exists
+ *     to prevent.
+ */
+add_task(async function theDecisionTheComposerAsksForIsInWords() {
+  await writeRulesFile([
+    { email: "enc-always@example.com", encrypt: "always", sign: "never" },
+    { email: "enc-never@example.com", encrypt: "never", sign: "always" },
+    { email: "enc-maybe@example.com", encrypt: "maybe", sign: "maybe" },
+    { email: "plain@example.com" },
+  ]);
+  await OpenPGPAlias.load();
+
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["enc-always@example.com"], "encrypt"),
+    "always",
+    "a rule requiring encryption is reported as the word"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["enc-always@example.com"], "sign"),
+    "never",
+    "and its signing half is reported separately, not inferred from encryption"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["enc-never@example.com"], "encrypt"),
+    "never",
+    "a forbidding rule is reported too"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["enc-never@example.com"], "sign"),
+    "always",
+    "signing can be required where encryption is forbidden"
+  );
+
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["enc-maybe@example.com"], "encrypt"),
+    null,
+    "maybe is not a decision -- it is what the automatic behaviour already does"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["plain@example.com"], "sign"),
+    null,
+    "and an address with no rule decides nothing"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor([], "encrypt"),
+    null,
+    "no addressees is no decision"
+  );
+
+  // The three ways the answer must be "no decision" rather than a guess: a
+  // contradiction, an unknown field, and a mix that resolves to nothing.
+  await writeRulesFile([
+    { email: "one@example.com", encrypt: "always" },
+    { email: "two@example.com", encrypt: "never" },
+  ]);
+  await OpenPGPAlias.load();
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(
+      ["one@example.com", "two@example.com"],
+      "encrypt"
+    ),
+    null,
+    "two rules that disagree decide nothing -- the conflict is refused later, " +
+      "not resolved here"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor(["one@example.com"], "pgpMime"),
+    null,
+    "a field this method does not answer for decides nothing"
+  );
+});
+
 add_task(async function aRuleCannotRaiseATrust() {
   const { EnigmailKeyRing } = ChromeUtils.importESModule(
     "chrome://openpgp/content/modules/keyRing.sys.mjs"

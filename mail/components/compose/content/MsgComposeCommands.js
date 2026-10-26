@@ -68,6 +68,7 @@ ChromeUtils.defineESModuleGetters(this, {
   FolderTreeProperties: "resource:///modules/FolderTreeProperties.sys.mjs",
   FolderUtils: "resource:///modules/FolderUtils.sys.mjs",
   MailUtils: "resource:///modules/MailUtils.sys.mjs",
+  OpenPGPAlias: "chrome://openpgp/content/modules/OpenPGPAlias.sys.mjs",
   SelectionUtils: "resource://gre/modules/SelectionUtils.sys.mjs",
   ShortcutUtils: "resource://gre/modules/ShortcutUtils.sys.mjs",
   UIDensity: "resource:///modules/UIDensity.sys.mjs",
@@ -3510,6 +3511,96 @@ function getEncryptionCompatibleRecipients() {
   return recipients;
 }
 
+/**
+ * What the per-recipient rules decide about one field, for the addressees now.
+ *
+ * Item 89b's second half: the rules were resolved correctly and applied by
+ * nothing, so a rule saying "always encrypt to this address" was read, obeyed by
+ * no one, and the message went out in the clear.
+ *
+ * **A rule is a standing policy, so it outranks the automatic defaults** --
+ * `mail.e2ee.auto_enable` deciding whether encryption is worth suggesting, and
+ * `signMail` on the identity. It does **not** outrank a choice the user made in
+ * this window: `gUserTouched*` is respected, because a checkbox that flips back
+ * while someone is writing is worse than a rule they can see in Settings. What a
+ * manual override cannot do is make an untrusted key usable, and the pre-send
+ * resolution still refuses on that.
+ *
+ * `null` when no rule speaks about any addressee, which is the ordinary case.
+ *
+ * @param {"encrypt"|"sign"} field
+ * @returns {?"always"|"never"}
+ */
+function recipientRuleDecision(field) {
+  // The lazy getter rather than a destructured import, because that is this
+  // file's pattern. `OpenPGPAlias` is a real export of its module -- checked
+  // before the getter was added, since a getter for a member that does not
+  // exist resolves to undefined and throws somewhere unrelated.
+  if (!OpenPGPAlias?.decidedValueFor) {
+    return null;
+  }
+  const recipients = getEncryptionCompatibleRecipients();
+  if (!recipients.length) {
+    return null;
+  }
+  try {
+    return OpenPGPAlias.decidedValueFor(recipients, field);
+  } catch (ex) {
+    console.warn(`Reading recipient rules for ${field} failed`, ex);
+    return null;
+  }
+}
+
+/**
+ * Whether a rule forbids encryption for the current addressees.
+ *
+ * The automatic paths that turn encryption on consult this, because a rule that
+ * says never is a standing instruction and the preferences below it are
+ * defaults, not decisions. A user who turns encryption on by hand is a
+ * different matter and is left alone -- `gUserTouchedSendEncrypted` is the
+ * distinction, and it is checked at each call site rather than here.
+ *
+ * @returns {boolean}
+ */
+function recipientRuleForbidsEncryption() {
+  return recipientRuleDecision("encrypt") == "never";
+}
+
+/**
+ * Apply the rules to this message's encryption and signing state.
+ *
+ * Called from `checkEncryptionState()` before the preference short-circuit, so a
+ * rule takes effect even when every automatic behaviour is switched off -- which
+ * is the whole point of a rule. Also consulted by `updateEncryptionDependencies()`,
+ * which otherwise re-derives signing from the encryption state and would undo a
+ * `sign: never` rule on the next redraw.
+ *
+ * @returns {boolean} true if a rule decided anything, so a caller can tell the
+ *   difference between "no rule" and "rule says off".
+ */
+function applyRecipientRuleDefaults() {
+  let decided = false;
+
+  const encrypt = recipientRuleDecision("encrypt");
+  if (encrypt && !gUserTouchedSendEncrypted) {
+    // Both directions, because the first version of this only did the first:
+    // it honoured `always` and ignored `never`, so `mail.e2ee.auto_enable`
+    // turned encryption straight back on and the rule was obeyed by nothing --
+    // the exact defect this item exists to remove, reproduced inside its own
+    // fix. Found by the browser test, not by reading it back.
+    gSendEncrypted = encrypt == "always";
+    decided = true;
+  }
+
+  const sign = recipientRuleDecision("sign");
+  if (sign && !gUserTouchedSendSigned) {
+    gSendSigned = sign == "always";
+    decided = true;
+  }
+
+  return decided;
+}
+
 var gEmailsWithMissingKeys = [];
 var gEmailsWithMissingCerts = [];
 
@@ -3800,6 +3891,13 @@ async function checkEncryptionState(trigger) {
   const remindOpenPGP = Services.prefs.getBoolPref(
     "mail.openpgp.remind_encryption_possible"
   );
+  // Before the preference short-circuit below, deliberately: a rule is a
+  // standing instruction and must take effect when every automatic behaviour is
+  // off. A rule that turns encryption on also keeps this function past the
+  // early return, so the rest of the state machine sees the same message the
+  // user does.
+  applyRecipientRuleDefaults();
+
   const autoEnablePref = Services.prefs.getBoolPref(
     "mail.e2ee.auto_enable",
     false
@@ -3941,6 +4039,10 @@ async function checkEncryptionState(trigger) {
       !gSendEncrypted &&
       autoEnablePref &&
       !gUserTouchedSendEncrypted &&
+      // A rule saying never outranks the preference: this block is what
+      // turned encryption back on after the rule cleared it, which is how the
+      // missing half of Item 89b showed itself.
+      !recipientRuleForbidsEncryption() &&
       recipients.length &&
       (canEncryptSMIME || canEncryptOpenPGP)
     ) {
@@ -5629,6 +5731,9 @@ async function adjustEncryptAfterIdentityChange(prevIdentity) {
     !autoEnablePref &&
     !gSendEncrypted &&
     !gUserTouchedEncryptSubject &&
+    // Same rule, same reason: changing identity is not a decision about the
+    // recipients, and a rule is about the recipients.
+    !recipientRuleForbidsEncryption() &&
     prevIdentity.encryptionPolicy == 0 &&
     gCurrentIdentity.encryptionPolicy > 0
   ) {
@@ -11855,9 +11960,19 @@ function updateEncryptionDependencies() {
     ? isPgpConfigured()
     : isSmimeSigningConfigured();
 
+  // A rule that forbids signing has to survive this function, not merely the
+  // first call to it: everything below re-derives signing from the encryption
+  // state, and encryption on means signing on, which would undo `sign: never` on
+  // the next redraw. Item 89b.
+  const signRule = recipientRuleDecision("sign");
+
   if (!canSign) {
     gSendSigned = false;
     gUserTouchedSendSigned = false;
+  } else if (signRule == "never" && !gUserTouchedSendSigned) {
+    gSendSigned = false;
+  } else if (signRule == "always" && !gUserTouchedSendSigned) {
+    gSendSigned = true;
   } else if (!gSendEncrypted) {
     if (!gUserTouchedSendSigned) {
       gSendSigned = gCurrentIdentity.signMail;

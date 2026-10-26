@@ -391,6 +391,38 @@ export var OpenPGPAlias = {
   },
 
   /**
+   * What the rules decide about one field, across several addressees.
+   *
+   * **The question the composer actually asks.** `resolveForRecipients()` answers
+   * in `RuleValue` numbers, and a composer caller that compares them has to know
+   * what `2` means -- which is the mistake this file already records twice, so
+   * the translation lives here rather than at the call site.
+   *
+   * Returns a decision only when the rules agree on one. A conflict is not a
+   * decision: it reaches the pre-send refusal as `ProblemRuleConflict`, and the
+   * composer must not pick a winner out of it any more than the resolver may.
+   * A `maybe` is not a decision either -- it means "if you can", which is what
+   * the automatic behaviour already does.
+   *
+   * @param {string[]} addresses
+   * @param {"encrypt"|"sign"} field
+   * @returns {?"always"|"never"} `null` when nothing is decided.
+   */
+  decidedValueFor(addresses, field) {
+    if (field != "encrypt" && field != "sign") {
+      return null;
+    }
+    const resolved = this.resolveForRecipients(addresses ?? []);
+    if (resolved[field] === RuleValue.ALWAYS) {
+      return "always";
+    }
+    if (resolved[field] === RuleValue.NEVER) {
+      return "never";
+    }
+    return null;
+  },
+
+  /**
    * Whether the address is governed by a rule that names no key.
    *
    * @param {string} email

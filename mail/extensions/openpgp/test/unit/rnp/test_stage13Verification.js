@@ -569,7 +569,7 @@ add_task(async function theRulesMechanism() {
  * encrypted". Item 89b recorded that nothing applies the values at send time;
  * this is the measurement behind that sentence.
  */
-add_task(async function aRuleIsReadButNotApplied() {
+add_task(async function aRuleIsReadAndAnsweredInWords() {
   await writeRules([{ email: UNJUDGED, encrypt: "always", sign: "never" }]);
 
   const resolved = OpenPGPAlias.resolveForRecipients([UNJUDGED]);
@@ -580,13 +580,31 @@ add_task(async function aRuleIsReadButNotApplied() {
   );
   Assert.equal(resolved.sign, RuleValue.NEVER, "and to never for signing");
 
-  // Nothing in the tree consumes either value. Recorded as the gap, with the
-  // two call-site searches that establish it rather than a claim.
+  // The values are now consumed -- Item 89b's second half, wired 2026-10-26.
+  // This test used to record the opposite, and it is the seam the module tests
+  // could not cross: everything up to `resolveForRecipients()` was correct and
+  // nothing acted on the answer.
+  //
+  // The consumer is asserted in the composer itself, by
+  // `browser_recipientRulesApply.js`, because driving a compose window is what
+  // it takes to see it. What belongs here is the fact that the composer has a
+  // function whose job is to apply these, and that its answer is in words
+  // rather than in `RuleValue` numbers for a caller to interpret.
   info(
     "FINDING rule application: resolveForRecipients() yields " +
-      `encrypt=${resolved.encrypt} sign=${resolved.sign}, but the composer's ` +
-      `gSendEncrypted/gSendSigned are not driven from it -- Item 89b recorded ` +
-      `that as outstanding, and no code has been added since`
+      `encrypt=${resolved.encrypt} sign=${resolved.sign}, and the composer ` +
+      `consumes them through applyRecipientRuleDefaults(), which asks the ` +
+      `module for a decided value in words`
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor([UNJUDGED], "encrypt"),
+    "always",
+    "the composer's question is answered in words, not in numbers"
+  );
+  Assert.equal(
+    OpenPGPAlias.decidedValueFor([UNJUDGED], "sign"),
+    "never",
+    "and separately per field, which is what lets one be forced and one forbidden"
   );
   Assert.strictEqual(
     isValidityAcceptable(OpenPgpValidity.UNDEFINED, true),
