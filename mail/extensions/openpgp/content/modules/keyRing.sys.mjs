@@ -2511,38 +2511,6 @@ export var EnigmailKeyRing = {
     return keyMissing;
   },
 
-  async getMultValidKeysForOneRecipient(emailAddr, allowExpired = false) {
-    emailAddr = emailAddr.toLowerCase();
-    if (emailAddr.startsWith("<") && emailAddr.endsWith(">")) {
-      emailAddr = emailAddr.substr(1, emailAddr.length - 2);
-    }
-
-    const found = [];
-
-    const keyList = await this.getCandidateKeysForEmail(emailAddr);
-
-    for (const keyObj of keyList) {
-      const acceptanceLevel = await this.isValidKeyForRecipient(
-        keyObj,
-        emailAddr,
-        allowExpired
-      );
-      // Only the hard-invalid sentinel is excluded here, and deliberately: this
-      // list is what the UI shows, so a rejected key is still listed -- it is
-      // refused at the point of use by `isValidityUsable()`, not hidden from the
-      // reader. `INVALID` is negative; no validity value is.
-      if (acceptanceLevel === OpenPgpConstants.OpenPgpValidity.INVALID) {
-        continue;
-      }
-      if (!keyObj.secretAvailable) {
-        keyObj.acceptance =
-          this.getAcceptanceStringFromAcceptanceLevel(acceptanceLevel);
-      }
-      found.push(keyObj);
-    }
-    return found;
-  },
-
   /**
    * If the given email address has an alias definition, return its
    * list of key identifiers.

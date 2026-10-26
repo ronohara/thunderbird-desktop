@@ -4623,14 +4623,45 @@ export var RNP = {
     return result;
   },
 
-  async addEncryptionKeyForEmail(email, op) {
-    const key = await this.findKeyByEmail(email, true);
-    if (!key || key.isNull()) {
-      return false;
+  /**
+   * Add every acceptable recipient key for one address (Item 27a).
+   *
+   * **The internal arm now behaves as the external one already does.** The
+   * GnuPG path adds every fingerprint `getPublicKeysForEmail()` returns; this
+   * adds every key `findAllKeysByEmail()` returns, so a recipient with two live
+   * keys is encrypted to both rather than to whichever the old ranking preferred.
+   * That is what makes a key rotation work without a window in which the old key
+   * is gone and the new one is not yet used.
+   *
+   * **The filter is GnuPG's, plus the user's rejection.** Eligibility follows
+   * gpg's own rule as far as an internal-storage key can — not revoked, not
+   * expired, not disabled, and carrying the address on a usable user ID — and
+   * `findAllKeysByEmail()` excludes an address the user has rejected, because
+   * rejection is a statement only this build can make.
+   *
+   * @param {string} email - The recipient address.
+   * @param {rnp_op_encrypt_t} op
+   * @returns {Promise<integer>} How many keys were added; 0 means the address has
+   *   no usable key and the caller must refuse.
+   */
+  async addEncryptionKeysForEmail(email, op) {
+    const found = await this.findAllKeysByEmail(email, true);
+    let added = 0;
+    try {
+      for (const { handle } of found) {
+        this.addSuitableEncryptKey(handle, op);
+        added++;
+      }
+    } finally {
+      for (const { handle } of found) {
+        RNPLib.rnp_key_handle_destroy(handle);
+      }
     }
-    this.addSuitableEncryptKey(key, op);
-    RNPLib.rnp_key_handle_destroy(key);
-    return true;
+    return added;
+  },
+
+  async addEncryptionKeyForEmail(email, op) {
+    return (await this.addEncryptionKeysForEmail(email, op)) > 0;
   },
 
   getEmailWithoutBrackets(email) {
@@ -5231,7 +5262,9 @@ export var RNP = {
                   lazy.EnigmailConstants.INVALID_RECIPIENT;
                 return null;
               }
-            } else if (!(await this.addEncryptionKeyForEmail(rcpEmail, op))) {
+            } else if (!(await this.addEncryptionKeysForEmail(rcpEmail, op))) {
+              // Zero keys means no usable key for this address; the count is
+              // what the plural form answers, and zero is the refusal.
               resultStatus.statusFlags |=
                 lazy.EnigmailConstants.INVALID_RECIPIENT;
               return null;
@@ -5798,12 +5831,45 @@ export var RNP = {
    *   key to be acceptable as recipient key.
    * @returns {Promise<ctypes.voidptr_t>} key handle of matching key.
    */
-  async findKeyByEmail(id, onlyIfAcceptableAsRecipientKey = false) {
+  /**
+   * Every key in the RNP store that may be used for one address.
+   *
+   * **The multi-key answer Item 27a needs, and the single-key one expressed in
+   * terms of it.** `findKeyByEmail()` below has asked this question since the
+   * beginning and taken the first acceptable key, preferring a personal or
+   * verified one; that preference is a *ranking of a list*, so the list is what
+   * is produced here and the choice is made from it. The equivalence is exact:
+   * the old loop stopped at the first personal-or-verified key and kept the
+   * first unverified as a fallback, which is what picking from an ordered
+   * collection gives.
+   *
+   * **`strong` is the ordering the old loop used**, kept as a flag rather than
+   * re-derived: a personal key, or one the user has verified, wins over a key
+   * that is merely acceptable. Nothing else distinguishes the entries.
+   *
+   * **Rejection is the boundary this function owns.** An address whose
+   * acceptance is `rejected` is not a recipient address at all, and a key with
+   * no decision is not one either — those are the user's statements, and gpg has
+   * no vocabulary for them. Everything else follows GnuPG's own eligibility rule
+   * as closely as an internal-storage key can: not revoked, not expired when the
+   * caller excludes expired keys, and carrying a usable user ID.
+   *
+   * Callers own the returned handles and must destroy each with
+   * `rnp_key_handle_destroy()`.
+   *
+   * @param {string} id - A bracketed address, e.g. `"<alice@example.com>"`.
+   * @param {boolean} [onlyIfAcceptableAsRecipientKey=false] - Apply the
+   *   acceptance rules, rather than returning any key carrying the address.
+   * @returns {Promise<Array<{handle: rnp_key_handle_t, strong: boolean}>>} In
+   *   iterator order, which is the order the old loop saw them in.
+   */
+  async findAllKeysByEmail(id, onlyIfAcceptableAsRecipientKey = false) {
     if (!id.startsWith("<") || !id.endsWith(">") || id.includes(" ")) {
       throw new Error(`Invalid argument; id=${id}`);
     }
 
     const emailWithoutBrackets = id.substring(1, id.length - 1);
+    const found = [];
 
     const iter = new RNPLib.rnp_identifier_iterator_t();
     const grip = new lazy.ctypes.char.ptr();
@@ -5814,175 +5880,204 @@ export var RNP = {
       throw new Error("rnp_identifier_iterator_create failed");
     }
 
-    let foundHandle = null;
-    let tentativeUnverifiedHandle = null;
-
-    while (
-      !foundHandle &&
-      !RNPLib.rnp_identifier_iterator_next(iter, grip.address())
-    ) {
-      if (grip.isNull()) {
-        break;
-      }
-
-      let have_handle = false;
-      const handle = new RNPLib.rnp_key_handle_t();
-
-      try {
-        const is_subkey = new lazy.ctypes.bool();
-        const uid_count = new lazy.ctypes.size_t();
-
-        if (RNPLib.rnp_locate_key(RNPLib.ffi, "grip", grip, handle.address())) {
-          throw new Error("rnp_locate_key failed");
-        }
-        have_handle = true;
-        if (RNPLib.rnp_key_is_sub(handle, is_subkey.address())) {
-          throw new Error("rnp_key_is_sub failed");
-        }
-        if (is_subkey.value) {
-          continue;
-        }
-        if (this.isBadKey(handle, null, RNPLib.ffi)) {
-          continue;
+    try {
+      while (!RNPLib.rnp_identifier_iterator_next(iter, grip.address())) {
+        if (grip.isNull()) {
+          break;
         }
 
-        const keyObj = {};
-        if (
-          !this.getKeyInfoFromHandle(
-            RNPLib.ffi,
-            handle,
-            keyObj,
-            false,
-            true,
-            false
-          )
-        ) {
-          // unexpected failure, skip
-          continue;
-        }
+        let keep = false;
+        const handle = new RNPLib.rnp_key_handle_t();
 
-        if (
-          keyObj.keyTrust == "r" ||
-          keyObj.keyTrust == "e" ||
-          (onlyIfAcceptableAsRecipientKey &&
-            this.isExpiredTime(keyObj.effectiveExpiryTime))
-        ) {
-          continue;
-        }
-
-        if (RNPLib.rnp_key_get_uid_count(handle, uid_count.address())) {
-          throw new Error("rnp_key_get_uid_count failed");
-        }
-
-        let foundUid = false;
-        for (let i = 0; i < uid_count.value && !foundUid; i++) {
-          const uid_handle = new RNPLib.rnp_uid_handle_t();
+        try {
+          const is_subkey = new lazy.ctypes.bool();
+          const uid_count = new lazy.ctypes.size_t();
 
           if (
-            RNPLib.rnp_key_get_uid_handle_at(handle, i, uid_handle.address())
+            RNPLib.rnp_locate_key(RNPLib.ffi, "grip", grip, handle.address())
           ) {
-            throw new Error("rnp_key_get_uid_handle_at failed");
+            throw new Error("rnp_locate_key failed");
+          }
+          keep = true;
+          if (RNPLib.rnp_key_is_sub(handle, is_subkey.address())) {
+            throw new Error("rnp_key_is_sub failed");
+          }
+          if (is_subkey.value) {
+            continue;
+          }
+          if (this.isBadKey(handle, null, RNPLib.ffi)) {
+            continue;
           }
 
-          if (!this.isBadUid(uid_handle) && !this.isRevokedUid(uid_handle)) {
-            const uid_str = new lazy.ctypes.char.ptr();
-            if (RNPLib.rnp_key_get_uid_at(handle, i, uid_str.address())) {
-              throw new Error("rnp_key_get_uid_at failed");
-            }
+          const keyObj = {};
+          if (
+            !this.getKeyInfoFromHandle(
+              RNPLib.ffi,
+              handle,
+              keyObj,
+              false,
+              true,
+              false
+            )
+          ) {
+            continue;
+          }
 
-            const userId = uid_str.readStringReplaceMalformed();
-            RNPLib.rnp_buffer_destroy(uid_str);
+          if (
+            keyObj.keyTrust == "r" ||
+            keyObj.keyTrust == "e" ||
+            (onlyIfAcceptableAsRecipientKey &&
+              this.isExpiredTime(keyObj.effectiveExpiryTime))
+          ) {
+            continue;
+          }
+
+          if (RNPLib.rnp_key_get_uid_count(handle, uid_count.address())) {
+            throw new Error("rnp_key_get_uid_count failed");
+          }
+
+          let foundUid = false;
+          let strong = false;
+
+          for (let i = 0; i < uid_count.value && !foundUid; i++) {
+            const uid_handle = new RNPLib.rnp_uid_handle_t();
 
             if (
-              lazy.EnigmailFuncs.getEmailFromUserID(userId).toLowerCase() ==
-              emailWithoutBrackets
+              RNPLib.rnp_key_get_uid_handle_at(handle, i, uid_handle.address())
             ) {
-              foundUid = true;
+              throw new Error("rnp_key_get_uid_handle_at failed");
+            }
 
-              if (onlyIfAcceptableAsRecipientKey) {
-                // a key is acceptable, either:
-                // - without secret key, it's accepted verified or unverified
-                // - with secret key, must be marked as personal
-
-                const have_secret = new lazy.ctypes.bool();
-                if (RNPLib.rnp_key_have_secret(handle, have_secret.address())) {
-                  throw new Error("rnp_key_have_secret failed");
-                }
-
-                const fingerprint = new lazy.ctypes.char.ptr();
-                if (RNPLib.rnp_key_get_fprint(handle, fingerprint.address())) {
-                  throw new Error("rnp_key_get_fprint failed");
-                }
-                const fpr = fingerprint.readString();
-                RNPLib.rnp_buffer_destroy(fingerprint);
-
-                if (have_secret.value) {
-                  const isAccepted =
-                    await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(fpr);
-                  if (isAccepted) {
-                    foundHandle = handle;
-                    have_handle = false;
-                    if (tentativeUnverifiedHandle) {
-                      RNPLib.rnp_key_handle_destroy(tentativeUnverifiedHandle);
-                      tentativeUnverifiedHandle = null;
-                    }
-                  }
-                } else {
-                  const acceptanceResult = {};
-                  try {
-                    await lazy.PgpSqliteDb2.getAcceptance(
-                      fpr,
-                      emailWithoutBrackets,
-                      acceptanceResult
-                    );
-                  } catch (ex) {
-                    lazy.log.warn("Get acceptance FAILED!", ex);
-                  }
-
-                  if (!acceptanceResult.emailDecided) {
-                    continue;
-                  }
-                  if (acceptanceResult.fingerprintAcceptance == "unverified") {
-                    /* keep searching for a better, verified key */
-                    if (!tentativeUnverifiedHandle) {
-                      tentativeUnverifiedHandle = handle;
-                      have_handle = false;
-                    }
-                  } else if (
-                    acceptanceResult.fingerprintAcceptance == "verified"
-                  ) {
-                    foundHandle = handle;
-                    have_handle = false;
-                    if (tentativeUnverifiedHandle) {
-                      RNPLib.rnp_key_handle_destroy(tentativeUnverifiedHandle);
-                      tentativeUnverifiedHandle = null;
-                    }
-                  }
-                }
-              } else {
-                foundHandle = handle;
-                have_handle = false;
+            try {
+              if (this.isBadUid(uid_handle) || this.isRevokedUid(uid_handle)) {
+                continue;
               }
+
+              const uid_str = new lazy.ctypes.char.ptr();
+              if (RNPLib.rnp_key_get_uid_at(handle, i, uid_str.address())) {
+                throw new Error("rnp_key_get_uid_at failed");
+              }
+
+              const userId = uid_str.readStringReplaceMalformed();
+              RNPLib.rnp_buffer_destroy(uid_str);
+
+              if (
+                lazy.EnigmailFuncs.getEmailFromUserID(userId).toLowerCase() !=
+                emailWithoutBrackets
+              ) {
+                continue;
+              }
+
+              if (!onlyIfAcceptableAsRecipientKey) {
+                foundUid = true;
+                strong = true;
+                continue;
+              }
+
+              // A key is acceptable as a recipient key either:
+              //  - without secret material, when the user has decided on it and
+              //    the decision is not "rejected"; or
+              //  - with secret material, when it is marked as personal.
+              const have_secret = new lazy.ctypes.bool();
+              if (RNPLib.rnp_key_have_secret(handle, have_secret.address())) {
+                throw new Error("rnp_key_have_secret failed");
+              }
+
+              const fingerprint = new lazy.ctypes.char.ptr();
+              if (RNPLib.rnp_key_get_fprint(handle, fingerprint.address())) {
+                throw new Error("rnp_key_get_fprint failed");
+              }
+              const fpr = fingerprint.readString();
+              RNPLib.rnp_buffer_destroy(fingerprint);
+
+              if (have_secret.value) {
+                if (await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(fpr)) {
+                  foundUid = true;
+                  strong = true;
+                }
+                continue;
+              }
+
+              const acceptanceResult = {};
+              try {
+                await lazy.PgpSqliteDb2.getAcceptance(
+                  fpr,
+                  emailWithoutBrackets,
+                  acceptanceResult
+                );
+              } catch (ex) {
+                lazy.log.warn("Get acceptance FAILED!", ex);
+              }
+
+              if (!acceptanceResult.emailDecided) {
+                continue;
+              }
+              // `rejected` is the user saying not to use this key, and gpg has
+              // no vocabulary for it -- so it is excluded here rather than left
+              // to a later filter. `undecided` is not a decision either.
+              if (acceptanceResult.fingerprintAcceptance == "unverified") {
+                foundUid = true;
+                strong = false;
+              } else if (acceptanceResult.fingerprintAcceptance == "verified") {
+                foundUid = true;
+                strong = true;
+              }
+            } finally {
+              RNPLib.rnp_uid_handle_destroy(uid_handle);
             }
           }
-          RNPLib.rnp_uid_handle_destroy(uid_handle);
-        }
-      } catch (ex) {
-        lazy.log.warn(`Finding key by email=${id} FAILED`, ex);
-      } finally {
-        if (have_handle) {
-          RNPLib.rnp_key_handle_destroy(handle);
+
+          if (foundUid) {
+            found.push({ handle, strong });
+            keep = false;
+          }
+        } catch (ex) {
+          lazy.log.warn(`Finding keys by email=${id} FAILED`, ex);
+        } finally {
+          if (keep) {
+            RNPLib.rnp_key_handle_destroy(handle);
+          }
         }
       }
+    } finally {
+      RNPLib.rnp_identifier_iterator_destroy(iter);
     }
 
-    if (!foundHandle && tentativeUnverifiedHandle) {
-      foundHandle = tentativeUnverifiedHandle;
-      tentativeUnverifiedHandle = null;
+    return found;
+  },
+
+  /**
+   * The single key `findKeyByEmail()` has always returned, chosen from the list
+   * `findAllKeysByEmail()` produces.
+   *
+   * **Kept as an equivalence rather than rewritten.** The old loop preferred a
+   * personal-or-verified key and fell back to the first unverified one; that is
+   * a choice over an ordered list, so it is expressed as one. The handles not
+   * chosen are destroyed here, because the caller owns only what it is given.
+   *
+   * @param {string} id - A bracketed address.
+   * @param {boolean} [onlyIfAcceptableAsRecipientKey=false]
+   * @returns {Promise<?rnp_key_handle_t>} The chosen handle, or null.
+   */
+  async findKeyByEmail(id, onlyIfAcceptableAsRecipientKey = false) {
+    const found = await this.findAllKeysByEmail(
+      id,
+      onlyIfAcceptableAsRecipientKey
+    );
+    if (!found.length) {
+      return null;
     }
 
-    RNPLib.rnp_identifier_iterator_destroy(iter);
-    return foundHandle;
+    // The first strong entry, else the first entry. That is what the old loop
+    // produced: it stopped at the first personal-or-verified key, and kept the
+    // first unverified one only when no strong key appeared.
+    const chosen = found.find(entry => entry.strong) ?? found[0];
+    for (const entry of found) {
+      if (entry.handle !== chosen.handle) {
+        RNPLib.rnp_key_handle_destroy(entry.handle);
+      }
+    }
+    return chosen.handle;
   },
 
   async getPublicKey(id, store = RNPLib.ffi) {

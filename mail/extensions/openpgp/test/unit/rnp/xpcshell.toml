@@ -84,6 +84,8 @@ skip-if = ["os != 'linux'"]
 
 ["test_multiKeyRecipient.js"]
 
+["test_multiKeyEncryption.js"]
+
 ["test_stage6.js"]
 skip-if = ["os != 'linux'"]
 
