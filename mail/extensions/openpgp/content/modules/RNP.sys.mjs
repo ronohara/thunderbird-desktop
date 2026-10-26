@@ -6,7 +6,7 @@ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 // Imported directly rather than through a lazy getter: from this chrome://
 // module, defineESModuleGetters on this resource:/// module resolves to
 // undefined, while a direct import works. Verified in xpcshell with a probe.
-import { enforcePrimaryPassword } from "resource:///modules/PrimaryPassword.sys.mjs";
+import { requirePrimaryPassword } from "resource:///modules/PrimaryPassword.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -3610,12 +3610,21 @@ export var RNP = {
     // profile can read. Refuse here rather than warning, because a warning is
     // dismissible and this is not.
     //
-    // `enforcePrimaryPassword()` opens the change-password dialog itself and
+    // `requirePrimaryPassword()` opens the change-password dialog itself and
     // reports whether the user complied, which is what D7 requires: the
-    // refusal has to carry the route forward. It enforces the
-    // `PrimaryPassword: true` enterprise policy, so a profile with no policy
-    // is unaffected -- see design 12.5, which wants the stronger reading.
-    if (seckey && !enforcePrimaryPassword(win)) {
+    // refusal has to carry the route forward. **It asks whether a password
+    // exists, not merely whether the enterprise policy requires one** -- Item
+    // 53's stronger reading, chosen by the user on 2026-10-27, because
+    // `enforcePrimaryPassword()` returns true immediately on every ordinary
+    // profile and so protected nobody.
+    //
+    // **The window is what keeps this from refusing the whole test suite.** A
+    // user-initiated import always has one; tests and programmatic imports pass
+    // null, and `requirePrimaryPassword()` refuses without a window rather than
+    // passing silently. So a null-window import is refused here, deliberately,
+    // and tests that import secret keys are expected to set a Primary Password
+    // first -- which is the behaviour this requirement is about.
+    if (seckey && !requirePrimaryPassword(win)) {
       const refused = {};
       refused.exitCode = 0;
       refused.importedKeys = [];

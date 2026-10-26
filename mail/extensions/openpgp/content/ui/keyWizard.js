@@ -24,7 +24,7 @@ var { AppConstants } = ChromeUtils.importESModule(
 var { OpenPGPMasterpass } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/masterpass.sys.mjs"
 );
-var { enforcePrimaryPassword } = ChromeUtils.importESModule(
+var { requirePrimaryPassword } = ChromeUtils.importESModule(
   "resource:///modules/PrimaryPassword.sys.mjs"
 );
 var { EnigmailKey } = ChromeUtils.importESModule(
@@ -794,11 +794,14 @@ async function openPgpKeygenConfirm() {
   // dialog and reports whether the user complied, which is the route forward
   // D7 requires; refusing silently would block the action with nowhere to go.
   //
-  // It enforces the `PrimaryPassword: true` enterprise policy, so a profile
-  // with no policy is unaffected. Design 12.5's stronger reading -- refuse
-  // whenever there is no password, policy or not -- is not implemented here
-  // and is recorded as a gap in the plan.
-  if (!enforcePrimaryPassword(window)) {
+  // Item 53, on the user's decision of 2026-10-27: this is the stronger
+  // reading design 12.5 asks for -- refuse whenever there is no password,
+  // policy or not. A secret key in the internal store is protected by the SDR
+  // key, and without a Primary Password that key is stretched once and stored
+  // unprotected in the profile, so the private key is readable by anyone who
+  // can read the profile directory. `enforcePrimaryPassword()` would return
+  // true immediately on an ordinary profile, which is why it is not used here.
+  if (!requirePrimaryPassword(window)) {
     openPgpWarning.collapsed = false;
     document.l10n.setAttributes(
       openPgpWarningText,
@@ -1091,14 +1094,16 @@ async function openPgpImportStart() {
   // Item 73 / D7: the same refusal-with-a-route the key-generation path makes.
   // A secret key imported here is protected by the SDR key, and without a
   // Primary Password that key is stretched once, so the private key is readable
-  // by anyone who can open the profile. enforcePrimaryPassword() opens the
+  // by anyone who can open the profile. requirePrimaryPassword() opens the
   // change-password dialog and reports whether the user complied, so the route
-  // forward is the refusal rather than a dead end.
+  // forward is the refusal rather than a dead end -- and unlike
+  // enforcePrimaryPassword() it does not return early on a profile with no
+  // enterprise policy, which is the whole point of Item 53's stronger reading.
   //
   // Before this, the import path had no check at all -- it wrote secret
   // material whatever the policy said, which is the asymmetry Item 53's own
   // audit named and this item closes.
-  if (!enforcePrimaryPassword(window)) {
+  if (!requirePrimaryPassword(window)) {
     document.l10n.setAttributes(
       await addImportWarningNotification(),
       "openpgp-import-error-primary-password"
@@ -1363,6 +1368,8 @@ async function importSetupMessage(mimePartText) {
     address: gIdentity.email,
     preferEncrypt,
     identity: gIdentity,
+    // Item 53: this is a user-initiated import, so the gate must see a window.
+    win: window,
   });
   if (!result.ok) {
     Services.prompt.alert(

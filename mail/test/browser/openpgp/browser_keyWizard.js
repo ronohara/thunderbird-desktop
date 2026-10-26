@@ -366,7 +366,48 @@ add_task(async function missing_identity_name() {
 /**
  * Generate a new OpenPGP Key.
  */
+/**
+ * Run a task with a Primary Password present, and the password removed after.
+ *
+ * **Item 53 requires one before a key is created or a secret key imported.** The
+ * wizard's two paths now call `requirePrimaryPassword(window)`, which opens the
+ * change-password dialog when none is set — correct for a user, and a hang in a
+ * headless run with nobody to answer it.
+ *
+ * **Set through the token rather than by answering the dialog**, so these tasks
+ * keep testing the wizard rather than the password dialog, and removed in a
+ * `finally` so a failing assertion cannot leave a password behind for the next
+ * task. `browser_primaryPasswordGate.js` is where the dialog itself is driven,
+ * including refusing, cancelling and completing.
+ *
+ * @param {function(): Promise<void>} body
+ * @returns {Promise<void>}
+ */
+async function withPrimaryPassword(body) {
+  const token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
+  );
+  const hadPassword = token.hasPassword;
+  if (!hadPassword) {
+    await token.changePassword("", "item53-wizard-passphrase");
+  }
+  try {
+    await body();
+  } finally {
+    if (!hadPassword) {
+      const after = Cc[
+        "@mozilla.org/security/internalkeytoken;1"
+      ].createInstance(Ci.nsIPKCS11Token);
+      await after.changePassword("item53-wizard-passphrase", "");
+    }
+  }
+}
+
 add_task(async function generate_new_key() {
+  await withPrimaryPassword(generateNewKeyBody);
+});
+
+async function generateNewKeyBody() {
   // Open the key wizard from the "Add Key" button.
   const button = tabDocument.getElementById("addOpenPgpButton");
   EventUtils.synthesizeMouseAtCenter(button, {}, tabWindow);
@@ -453,12 +494,16 @@ add_task(async function generate_new_key() {
   );
 
   await OpenPGPTestUtils.removeKeyById(createdKeyId, true);
-});
+}
 
 /**
  * Import an OpenPGP secret key from file.
  */
 add_task(async function import_secret_key() {
+  await withPrimaryPassword(importSecretKeyBody);
+});
+
+async function importSecretKeyBody() {
   // Importing a secret key into the profile is refused while the external
   // GnuPG path is in use (Item 9 in the plan): the key belongs in the keyring,
   // and this build has no route that writes there. The suite enables that pref
@@ -584,7 +629,7 @@ add_task(async function import_secret_key() {
   }
 
   await SpecialPowers.popPrefEnv();
-});
+}
 
 /**
  * Setting an external key that GnuPG holds must not put a copy in the profile.

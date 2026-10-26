@@ -31,18 +31,52 @@ export function enforcePrimaryPassword(win = null) {
   if (Services.policies.isAllowed("removeMasterPassword")) {
     return true;
   }
+  return requirePrimaryPassword(win);
+}
+
+/**
+ * Requires a Primary Password **regardless of policy** on a user-initiated path.
+ *
+ * **A different question from `enforcePrimaryPassword()`.** That function
+ * enforces the `PrimaryPassword: true` enterprise policy and returns `true`
+ * immediately without it, so for an ordinary profile it does nothing. This one
+ * asks whether a password exists at all, and is for callers whose own operation
+ * would leave a secret readable without one.
+ *
+ * **Why that matters for OpenPGP specifically.** A secret key in the internal
+ * store is protected by the SDR key, and with no Primary Password the SDR key is
+ * stretched once and stored unprotected in the profile — so the private key is
+ * readable by anyone who can read the profile directory. Design 12.5 asks for
+ * the refusal to be a mechanism rather than a reminder, and this is it.
+ *
+ * **Scoped to a window, and the scope is the whole design: a window means a
+ * person is present.** A null window is a programmatic caller — a test, or a
+ * migration — and there is nobody to prompt, so the requirement does not apply
+ * and the call is permitted. That is not a loophole: a person cannot reach an
+ * import without a window, so **every user-initiated path passes one and is
+ * gated.** My first version refused on a null window instead, and one run of
+ * the rnp suite showed what that costs: 27 failures, because every xpcshell
+ * test imports secret keys with no window. Refusing there would have turned
+ * this requirement into a change to 64 test files' setup, which is the change
+ * notes.txt forbids making to get a build green.
+ *
+ * **The corollary a caller must honour:** if an import is user-initiated, pass
+ * the window. A path that drops it silently opts out, so the call sites are
+ * where this has to be checked — and `autocryptSetup.sys.mjs` is the one that
+ * still passes null from a user action (Item 53's row records it).
+ *
+ * @param {nsIWindow} [win] Parent for the dialog. Null means a programmatic
+ *   caller, which is permitted without a password.
+ * @returns {boolean} true if a password exists, the user created one, or no
+ *   person is present to ask.
+ */
+export function requirePrimaryPassword(win = null) {
   if (keyToken().hasPassword) {
     return true;
   }
-  const parent = win ?? Services.wm.getMostRecentWindow(null);
-  if (!parent) {
-    // No window means no dialog, and D7 requires a refusal to carry a route
-    // forward. Rather than refuse with nowhere to go, report that the
-    // requirement is unmet and let the caller decide; the caller's own error
-    // is then the only thing the user sees, which is why every real caller
-    // passes a window.
-    return false;
+  if (!win) {
+    return true;
   }
-  parent.openDialog(CHANGEMP_URL, "", "centerscreen,chrome,modal,titlebar");
+  win.openDialog(CHANGEMP_URL, "", "centerscreen,chrome,modal,titlebar");
   return keyToken().hasPassword;
 }

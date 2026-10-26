@@ -390,6 +390,11 @@ export const AutocryptSetup = {
    *   a protected one does not; a caller that cannot supply it must prompt,
    *   because a silent empty callback produces an import that fails later, at
    *   signing time, looking like a different problem.
+   * @param {?nsIDOMWindow} [options.win] - The window to parent a
+   *   change-password dialog with. Item 53 requires a Primary Password before a
+   *   secret key enters the internal store, and the gate reads a window as "a
+   *   person is present": a user-initiated adoption must pass one, and a test
+   *   passing null is permitted.
    * @returns {Promise<{ok: boolean, error?: string, fingerprint?: string}>}
    */
   async adopt({
@@ -398,6 +403,7 @@ export const AutocryptSetup = {
     preferEncrypt,
     identity,
     passphraseCallback = () => "",
+    win = null,
   }) {
     const { EnigmailKeyRing } = ChromeUtils.importESModule(
       "chrome://openpgp/content/modules/keyRing.sys.mjs"
@@ -412,8 +418,15 @@ export const AutocryptSetup = {
     // The block arrived *decrypted* by the setup code, and still protected by
     // whatever passphrase the key itself had -- two different secrets. This
     // callback supplies the second.
+    // `win` is threaded through for Item 53: importing a setup message is a
+    // user-initiated path, and the import gate requires a Primary Password
+    // before a secret key enters the internal store. Passing `null` here — which
+    // this did until 2026-10-27 — was a hole in exactly that requirement: the
+    // gate reads a window as "a person is present", so a user-initiated import
+    // with no window opted out of it. Callers with no window are tests, and a
+    // null window is still permitted.
     const imported = await rnp.importSecKeyBlockImpl(
-      null,
+      win,
       passphraseCallback,
       true,
       keyBlock,

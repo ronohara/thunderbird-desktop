@@ -282,8 +282,17 @@ add_task(async function bothKeyPathsCallTheGate() {
   // assertion at 3 == 2 while the code was correct. Comments end at the newline,
   // so requiring the name to be the first thing on its statement is enough to
   // exclude them.
+  //
+  // **Both names are accepted, and this guard is why that matters.** Item 53's
+  // Option B moved the two OpenPGP sites from `enforcePrimaryPassword()` -- which
+  // is policy-gated and so did nothing on an ordinary profile -- to
+  // `requirePrimaryPassword()`, which asks whether a password exists. The guard
+  // then failed at 0 == 2, which is the guard doing its job rather than breaking:
+  // a silent rename would have left it counting a function nothing calls.
   const calls =
-    source.match(/^\s*if \(!enforcePrimaryPassword\(window\)\)/gm) ?? [];
+    source.match(
+      /^\s*if \(!(?:enforce|require)PrimaryPassword\(window\)\)/gm
+    ) ?? [];
   Assert.equal(
     calls.length,
     2,

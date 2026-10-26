@@ -183,13 +183,50 @@ export const OpenPGPTestUtils = {
       );
     }
 
-    const result = await lazy.RNP.importSecKeyBlockImpl(
-      parent,
-      localPassphraseProvider,
-      passphrase != null && keepPassphrase,
-      pgpBlock,
-      []
-    );
+    // Item 53 requires a Primary Password before a secret key enters the
+    // internal store, because without one the SDR key that protects the OpenPGP
+    // master passphrase is stored unprotected in the profile. The requirement is
+    // scoped to callers that pass a window -- a window means a person is present
+    // -- and **43 browser test files pass one**, so satisfying it here, once, is
+    // what keeps all of them working.
+    //
+    // Set and removed around the import rather than for the test's duration,
+    // because several files assert that behaviour is *not* caused by a Primary
+    // Password, and that claim only holds in a profile without one. The password
+    // is set through the token rather than by answering the change-password
+    // dialog: driving a modal in a headless run is a hang, and the dialog has its
+    // own test in browser_primaryPasswordGate.js.
+    let removePassword = null;
+    if (parent) {
+      const token = Cc[
+        "@mozilla.org/security/internalkeytoken;1"
+      ].createInstance(Ci.nsIPKCS11Token);
+      if (!token.hasPassword) {
+        await token.changePassword("", "item53-test-passphrase");
+        removePassword = async () => {
+          const after = Cc[
+            "@mozilla.org/security/internalkeytoken;1"
+          ].createInstance(Ci.nsIPKCS11Token);
+          await after.changePassword("item53-test-passphrase", "");
+        };
+      }
+    }
+
+    let result;
+    try {
+      result = await lazy.RNP.importSecKeyBlockImpl(
+        parent,
+        localPassphraseProvider,
+        passphrase != null && keepPassphrase,
+        pgpBlock,
+        []
+      );
+    } finally {
+      if (removePassword) {
+        await removePassword();
+        lazy.EnigmailKeyRing.clearCache();
+      }
+    }
 
     if (!result || result.exitCode !== 0) {
       throw new Error(
