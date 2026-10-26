@@ -34,6 +34,12 @@ tags = ["openpgp"]
 
 ["browser_keyDetailsPassphrase.js"]
 
+["browser_setupMessageWizard.js"]
+run-if = [
+  "!headless",
+  "os != 'linux'",
+] # See bug 1806870, the same exclusion the wizard file beside it carries.
+
 ["browser_keyWizard.js"]
 run-if = [
   "!headless",
