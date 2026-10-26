@@ -29,6 +29,10 @@ run-sequentially = true  # writes the profile-global acceptance store
 
 ["test_certifyKey.js"]
 
+["test_cancelledSendDoesNotAlert.js"]
+
+["test_failureMatrix.js"]
+
 ["test_decryptionEngine.js"]
 
 ["test_encryptAndOrSign.js"]

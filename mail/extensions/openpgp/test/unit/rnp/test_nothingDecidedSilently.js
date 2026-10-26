@@ -43,12 +43,84 @@ const { PgpSqliteDb2 } = ChromeUtils.importESModule(
 const { OpenPGPTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/mail/OpenPGPTestUtils.sys.mjs"
 );
+const { Subprocess } = ChromeUtils.importESModule(
+  "resource://gre/modules/Subprocess.sys.mjs"
+);
 
 const keyDir = "../../../../../test/browser/openpgp/data/keys";
+
+var gpgPath = null;
+var gnupgHome = null;
+
+/**
+ * @param {string[]} args
+ * @returns {Promise<{exitCode: integer, stdout: string, stderr: string}>}
+ */
+async function runGpg(args) {
+  const process = await Subprocess.call({
+    command: gpgPath,
+    arguments: [
+      "--batch",
+      "--no-tty",
+      "--yes",
+      "--pinentry-mode",
+      "loopback",
+      ...args,
+    ],
+    environment: { GNUPGHOME: gnupgHome.path },
+    environmentAppend: true,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await process.stdout.readString();
+  const stderr = await process.stderr.readString();
+  const { exitCode } = await process.wait();
+  return { exitCode, stdout, stderr };
+}
 
 add_setup(async function () {
   do_get_profile();
   await OpenPGPTestUtils.initOpenPGP();
+
+  try {
+    gpgPath = await Subprocess.pathSearch("gpg");
+  } catch (ex) {
+    info("No gpg executable found; check 2 will be skipped.");
+    return;
+  }
+
+  // A throwaway home, and a pinentry that does not exist so a command that
+  // would ask a human fails instead -- and never puts a dialog on a screen.
+  gnupgHome = do_get_tempdir();
+  gnupgHome.append("gnupg-nothing-silent");
+  gnupgHome.createUnique(Ci.nsIFile.DIRECTORY_TYPE, 0o700);
+  await IOUtils.writeUTF8(
+    PathUtils.join(gnupgHome.path, "gpg-agent.conf"),
+    "pinentry-program /nonexistent/item67-no-pinentry\n"
+  );
+
+  const previousHome = Services.env.exists("GNUPGHOME")
+    ? Services.env.get("GNUPGHOME")
+    : "";
+  Services.env.set("GNUPGHOME", gnupgHome.path);
+  registerCleanupFunction(async () => {
+    try {
+      const gpgconfPath = await Subprocess.pathSearch("gpgconf");
+      const process = await Subprocess.call({
+        command: gpgconfPath,
+        arguments: ["--kill", "all"],
+        environment: { GNUPGHOME: gnupgHome.path },
+        environmentAppend: true,
+        stderr: "pipe",
+      });
+      await process.stderr.readString();
+      await process.wait();
+    } catch (ex) {
+      info(`Could not stop gpg-agent: ${ex.message}`);
+    }
+    Services.env.set("GNUPGHOME", previousHome);
+    gnupgHome.remove(true);
+  });
 });
 
 /**
@@ -263,10 +335,116 @@ add_task(async function check1_twoAcceptableKeysAreResolvedSilently() {
  * de-duplicates by fingerprint, with the GnuPG revision surviving. That rule is
  * asserted in the other direction by Item 14's tests.
  */
-add_task(async function check2_notRun() {
+add_task(async function check2_oneAskNotTwoWithDifferentAnswers() {
+  if (!gpgPath) {
+    info("SKIPPED: no gpg executable; the external arm cannot be exercised.");
+    Assert.ok(true, "skipped");
+    return;
+  }
+
+  const addr = "both@example.com";
+
+  // One key in GnuPG, one in this profile's ring, for the same address. That is
+  // the shape the check is about: two stores that could each answer, and the
+  // question is whether the caller has to ask twice and reconcile.
+  // A parameter file rather than `--quick-generate-key`: in batch mode even the
+  // quick form wants a passphrase, and this key needs none. `%no-protection` is
+  // the mechanism, and it is what Item 88a's test uses for the same reason.
+  const params = PathUtils.join(gnupgHome.path, "both-external.params");
+  await IOUtils.writeUTF8(
+    params,
+    [
+      "Key-Type: eddsa",
+      "Key-Curve: ed25519",
+      // cert and sign on the primary, plus an encryption subkey. My first
+      // version asked for a signing-only key, and `getEncryptionKeyMeta()`
+      // correctly skipped it -- a key that cannot encrypt is not an answer to
+      // "which key encrypts to this address". The filter was right and the
+      // fixture was wrong.
+      "Key-Usage: sign,cert",
+      "Subkey-Type: ecdh",
+      "Subkey-Curve: cv25519",
+      "Subkey-Usage: encrypt",
+      "Name-Real: Both External",
+      `Name-Email: ${addr}`,
+      "Expire-Date: 0",
+      "%no-protection",
+      "%commit",
+      "",
+    ].join("\n")
+  );
+  const generated = await runGpg(["--gen-key", params]);
+  Assert.equal(
+    generated.exitCode,
+    0,
+    `gpg generated the external key: ${generated.stderr.trim()}`
+  );
+
+  // The internal key has to be for the *same* address, or the two are not
+  // answers to one question. Generated rather than a fixture, because every
+  // fixture's address is fixed and none of them collides with a key gpg holds.
+  const pass = await OpenPGPMasterpass.retrieveOpenPGPPassword();
+  const internalId = await RNP.genKey(
+    `Both Internal <${addr}>`,
+    "ECC",
+    0,
+    0,
+    pass
+  );
+  EnigmailKeyRing.clearCache();
+  const internal = EnigmailKeyRing.getKeyById(internalId);
+  Assert.ok(internal, "the internal key is present");
+  await PgpSqliteDb2.acceptAsPersonalKey(internal.fpr);
+
+  // The external ring must be reachable for this test, which is the premise the
+  // earlier run could not establish.
+  Services.prefs.setBoolPref("mail.openpgp.allow_external_gnupg", true);
+  Services.prefs.setBoolPref("mail.openpgp.fetch_pubkeys_from_gnupg", true);
+  registerCleanupFunction(() => {
+    Services.prefs.clearUserPref("mail.openpgp.allow_external_gnupg");
+    Services.prefs.clearUserPref("mail.openpgp.fetch_pubkeys_from_gnupg");
+  });
+
+  EnigmailKeyRing.clearGnuPgKeyCache();
+  const loaded = await EnigmailKeyRing.loadGnuPgKeysForEmail(addr);
+  Assert.ok(loaded, "the external ring was consulted for this address");
+
+  // **The assertion the check exists for: one lookup, both answers.** A caller
+  // asks the ring once per address and gets every key that could encrypt to it,
+  // from both stores -- rather than asking each store separately and having to
+  // reconcile two lists itself, which is where "twice with different answers"
+  // would come from.
+  const metas = await EnigmailKeyRing.getEncryptionKeyMeta(addr);
   info(
-    "NOT RUN — check 2: one key held by GnuPG and one by the internal store. " +
-      "The transient GnuPG key path returned no keys in this harness, so the " +
-      "ask-once behaviour could not be observed. Not assumed to pass."
+    `FINDING check 2: ${metas.length} key metadata records for ${addr}: ` +
+      `${JSON.stringify(metas.map(m => m.keyObj?.fpr ?? m.readiness))}`
+  );
+  Assert.equal(
+    metas.length,
+    2,
+    `one ask returns both keys, got ${metas.length}`
+  );
+
+  // The metas are address-filtered; `getCandidateKeysForEmail()` is **not** --
+  // it returns the whole ring plus the transient keys, and the narrowing
+  // happens here in `getEncryptionKeyMeta()`. That surprised me while writing
+  // this: the name reads like a per-address lookup and it is a per-address
+  // *superset*. Asserting on the candidates would therefore have measured the
+  // ring's size rather than this address's answers, so the checks below are on
+  // the metas.
+  const internalMeta = metas.find(
+    m => m.keyObj?.fpr.toUpperCase() == internal.fpr.toUpperCase()
+  );
+  Assert.ok(internalMeta, "the internal key is one of the two answers");
+  const fromGnuPG = metas.filter(m => m.gnupgKey);
+  Assert.equal(
+    fromGnuPG.length,
+    1,
+    `exactly one answer came from GnuPG, got ${fromGnuPG.length}`
+  );
+  Assert.notEqual(
+    fromGnuPG[0].keyObj.fpr.toUpperCase(),
+    internal.fpr.toUpperCase(),
+    "and it is a different key from the internal one"
   );
 });

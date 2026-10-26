@@ -28,6 +28,8 @@ support-files = ["../data/**"]
 
 ["browser_recipientRulesApply.js"]
 
+["browser_encryptRefusal.js"]
+
 ["browser_composeSigned.js"]
 
 ["browser_composeSigned2.js"]
