@@ -179,9 +179,6 @@ openpgp-rules-error-duplicate = There is already a rule for { $recipient }.
 openpgp-rules-error-read-failed = This dialog could not read the rules file, so it will not overwrite it. Fix the file and reopen this dialog.
 openpgp-rules-error-write-failed = The rules file could not be written: { $error }
 openpgp-rules-confirm-remove = Remove the rule for { $recipient }?
-openpgp-rules-button =
-    .label = Per-recipient Rules…
-
 ## Owner trust (Item 88). Two stores, two mechanisms: for a key GnuPG holds the
 ## value is gpg's own database, and for a key in this profile it is the
 ## acceptance value the Key Details dialog edits. The wording here names the

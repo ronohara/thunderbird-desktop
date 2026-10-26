@@ -959,6 +959,14 @@ email-e2ee-key-acceptance-note = The stricter setting refuses to send to a recip
 email-e2ee-recipient-rules = Rules for individual recipients
 email-e2ee-recipient-rules-intro = A rule can require or forbid encryption, signing and PGP/MIME for one address or domain, and can name the keys to use. Rules are stored in one file, named by the mail.openpgp.alias_rules_file preference.
 
+# The label for the button that opens the rules dialog. It lives here, not in
+# openpgp.ftl with the dialog's own strings: this document loads 23 bundles and
+# openpgp.ftl is not one of them, so the button rendered with no text at all.
+# The dialog's strings stay where they are, because rulesEditor.xhtml does load
+# that bundle.
+openpgp-rules-button =
+    .label = Per-recipient Rules…
+
 ## DoH Section
 
 preferences-doh-secure-header = Secure DNS (DNS over HTTPS)

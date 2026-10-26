@@ -55,6 +55,13 @@ Preferences.addAll([
   { id: "mail.openpgp.require_trusted_keys", type: "bool" },
   { id: "mail.e2ee.auto_disable", type: "bool" },
   { id: "mail.e2ee.notify_on_auto_disable", type: "bool" },
+  // Item 90's control. Without this entry the checkbox in privacy.inc.xhtml
+  // renders and ticks, and the click throws before writing anything --
+  // "Missing preference for ID" in the console and a null dereference in
+  // Preferences.mjs. Registration is what makes a preference= binding live;
+  // the neighbouring prefs above are registered, which is what made the
+  // omission invisible.
+  { id: "mail.e2ee.warn_on_unencrypted_send", type: "bool" },
 
   // DoH
   { id: "network.trr.mode", type: "int" },
