@@ -481,7 +481,17 @@ export var EnigmailEncryption = {
     );
 
     if (resultStatus.exitCode) {
-      if (resultStatus.errorMsg.length) {
+      // A cancellation is not an error to report. Design 5.7 asks for the send
+      // to abort with the message kept, and Item 36's module half made the
+      // reason readable -- `resultStatus.cancelled` and a message that says
+      // "cancelled" rather than "failed". What was still missing is this: the
+      // composer alerted on any non-zero exit, so a user who pressed Cancel on
+      // the pinentry was then told, in a modal, that they had cancelled.
+      //
+      // The send still aborts, because `exitCode` stays non-zero and the caller
+      // acts on it; the message is still kept, because nothing was sent. All
+      // that changes is that the user is not scolded for a choice they made.
+      if (!resultStatus.cancelled && resultStatus.errorMsg.length) {
         Services.prompt.alert(win, null, resultStatus.errorMsg);
       }
     } else if (encrypted) {

@@ -525,6 +525,13 @@ openpgp-acceptance-undecided-label =
     .label = Not yet, maybe later.
 openpgp-acceptance-unverified-label =
     .label = Yes, but I have not verified that it is the correct key.
+
+# Item 77 / design 13.6: a short gloss on the two values whose GnuPG names are
+# opaque. The values underneath do not change — this is plain language on top of
+# one model, which is what 13.6 asks for rather than a second vocabulary.
+# Named by what the user is doing rather than by position in the list, so the
+# sentence stays true if the radios are ever reordered.
+openpgp-acceptance-values-gloss = In GnuPG’s vocabulary, deferring is “unknown” — not yet checked — and accepting without verification is “undefined” — used without verification.
 openpgp-acceptance-verified-label =
     .label = Yes, I’ve verified in person this key has the correct fingerprint.
 key-accept-personal =
