@@ -77,6 +77,21 @@ async function openComposerWithAssistant() {
     () => doc.getElementById("keyAssistant")?.open,
     "the key assistant should open"
   );
+  // `show()` returns before `fillSigningKey()` has finished: that is async, and
+  // it is what populates the section. Waiting only for the panel to open left
+  // every assertion in this file reading the *previous* rendering, and the
+  // result was a flake -- different tasks failing on different runs, always
+  // with an empty string. Waiting for the section to carry text is the state
+  // the assertions are actually about.
+  await TestUtils.waitForCondition(
+    () =>
+      !doc.getElementById("keyAssistantSigningKey").hidden &&
+      doc.getElementById("keyAssistantSigningKeyValue").textContent.trim()
+        .length > 0,
+    "the signing-key section should be filled in",
+    100,
+    50
+  );
   return { win, doc };
 }
 
@@ -192,6 +207,131 @@ add_task(async function theOrderDecidesWhichKeySigns() {
       row.textContent.includes("Signs now")
     );
     Assert.equal(marked.length, 1, "exactly one entry is marked as signing");
+  } finally {
+    await close_compose_window(win);
+  }
+});
+
+/**
+ * Item 65 part (3): the composer **lets the order be changed**, not merely shows
+ * it.
+ *
+ * The item names three parts, and its own wording for the third is "the composer
+ * names the key that will sign, **and lets the order be changed**, so the
+ * preference is visible where it is used". `theOrderDecidesWhichKeySigns()`
+ * above proves the first half; nothing pressed the arrows, so the second was
+ * built, wired, and unexercised -- which is exactly the kind of gap a badge
+ * should not paper over.
+ *
+ * Two keys in a stated order, then the first one's "move down" button is
+ * clicked. Three things must follow, and each fails separately:
+ *
+ *   1. the identity's stored list is reordered -- the durable fact, and the only
+ *      one that survives the window closing;
+ *   2. the other key signs -- because the assistant re-renders from the list,
+ *      not from a cached copy of what it drew first;
+ *   3. `openpgp_key_id` still mirrors the new first entry, because that attribute
+ *      is what two dozen other readers consult and a move that left it stale
+ *      would make the preference disagree with itself.
+ */
+add_task(async function theOrderCanBeChangedFromTheComposer() {
+  const first = await generateKey("Alice Move First <alice@openpgp.example>");
+  const second = await generateKey("Alice Move Second <alice@openpgp.example>");
+  EnigmailKeyRing.clearCache();
+  await PgpSqliteDb2.acceptAsPersonalKey(first.fpr);
+  await PgpSqliteDb2.acceptAsPersonalKey(second.fpr);
+
+  const older = first.keyCreated <= second.keyCreated ? first : second;
+  const newer = older === first ? second : first;
+  identityKeys.setKeyList(gIdentity, [older.fpr, newer.fpr]);
+
+  const signingSubkeyOf = key =>
+    key.subKeys.find(sk => sk.keyUseFor.includes("s")).fpr;
+
+  const { win, doc } = await openComposerWithAssistant();
+  try {
+    const list = doc.getElementById("keyAssistantSigningKeyOrderList");
+    Assert.equal(list.children.length, 2, "both keys are listed");
+
+    // The first entry signs before anything is moved -- the baseline, so the
+    // change below is a change rather than the initial state.
+    const before = doc.getElementById(
+      "keyAssistantSigningKeyValue"
+    ).textContent;
+    Assert.ok(
+      before.includes(signingSubkeyOf(older)),
+      "the first entry signs to begin with"
+    );
+
+    // "Move down" on the first entry. The buttons are the last two children of
+    // each row, and the first row's up button is disabled by construction.
+    const firstRow = list.children[0];
+    const buttons = firstRow.querySelectorAll("button");
+    Assert.equal(
+      buttons.length,
+      2,
+      "each row carries an up and a down control"
+    );
+    Assert.ok(buttons[0].disabled, "the first entry cannot move up");
+    Assert.ok(!buttons[1].disabled, "and it can move down");
+
+    buttons[1].click();
+
+    // Wait on the *rendered* state, not on the stored list. `moveKey()` writes
+    // the list synchronously and the click handler then calls the asynchronous
+    // `fillSigningKey()`, so a wait on the list returns before the window has
+    // redrawn -- and the assertions below then read the previous rendering.
+    // This is the same shape as the defect Item 99's row records: a synchronous
+    // write followed by an unawaited async rebuild.
+    await TestUtils.waitForCondition(
+      () =>
+        list.children[0]?.textContent.includes("Signs now") &&
+        identityKeys.getKeyList(gIdentity)[0] == newer.fpr,
+      "the reordered list should be redrawn with the new entry marked",
+      100,
+      50
+    );
+
+    // 1. The durable fact.
+    Assert.deepEqual(
+      identityKeys.getKeyList(gIdentity),
+      [newer.fpr, older.fpr],
+      "the identity's list was reordered, which is what survives the window"
+    );
+    // 2. The engine follows it -- read from the list, not from what was drawn
+    //    first.
+    Assert.equal(
+      identityKeys.firstUsableKey(gIdentity, "sign")?.fpr.toUpperCase(),
+      newer.fpr.toUpperCase(),
+      "and the other key is now the one that signs"
+    );
+    const after = doc.getElementById("keyAssistantSigningKeyValue").textContent;
+    Assert.ok(
+      after.includes(signingSubkeyOf(newer)),
+      `the composer names the new signer, read: "${after}"`
+    );
+    // 3. The single attribute mirrors the list, which is the invariant that
+    //    keeps readers which know only about one key correct.
+    Assert.equal(
+      gIdentity.getUnicharAttribute("openpgp_key_id").toUpperCase(),
+      newer.keyId.toUpperCase(),
+      "openpgp_key_id follows the new first entry"
+    );
+
+    // And the marking moved with it: exactly one row still says it signs.
+    const marked = [...list.children].filter(row =>
+      row.textContent.includes("Signs now")
+    );
+    Assert.equal(
+      marked.length,
+      1,
+      "exactly one entry is marked after the move"
+    );
+    Assert.strictEqual(
+      marked[0],
+      list.children[0],
+      "and it is the entry now first in the order"
+    );
   } finally {
     await close_compose_window(win);
   }
