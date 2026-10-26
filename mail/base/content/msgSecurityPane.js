@@ -20,7 +20,6 @@ ChromeUtils.defineESModuleGetters(this, {
   EnigmailFuncs: "chrome://openpgp/content/modules/funcs.sys.mjs",
   EnigmailKeyRing: "chrome://openpgp/content/modules/keyRing.sys.mjs",
   EnigmailWindows: "chrome://openpgp/content/modules/windows.sys.mjs",
-  RNP: "chrome://openpgp/content/modules/RNP.sys.mjs",
   MailUtils: "resource:///modules/MailUtils.sys.mjs",
 });
 
@@ -194,9 +193,15 @@ async function certifySignerKey(popupToHide) {
   // is about: the claim that this key belongs to that person.
   const userId =
     EnigmailFuncs.getEmailFromUserID(signer.userId) || signer.userId;
-  const done = await RNP.certifyKey(own.fpr, signer.fpr, userId);
+  // Through the dispatcher rather than straight to RNP: for a key GnuPG holds,
+  // signing it in this build's ring produces a signature gpg never sees, and
+  // the strict policy judges by what gpg computed. `certifyKey()` sends each
+  // key to the engine that owns it and records the judgment where the gate
+  // reads it (Item 88a).
+  const done = await EnigmailKeyRing.certifyKey(own.fpr, signer.fpr, userId);
 
-  if (!done) {
+  if (!done.ok) {
+    console.warn(`Certifying ${signer.fpr} failed: ${done.error ?? ""}`);
     Services.prompt.alert(
       window,
       null,

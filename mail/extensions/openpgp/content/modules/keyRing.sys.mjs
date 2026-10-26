@@ -1807,7 +1807,7 @@ export var EnigmailKeyRing = {
     );
   },
 
-  async isValidKeyForRecipient(keyObj, emailAddr, allowExpired) {
+  async isValidKeyForRecipient(keyObj, emailAddr, allowExpired, details) {
     if (!emailAddr) {
       return OpenPgpConstants.OpenPgpValidity.INVALID;
     }
@@ -1819,7 +1819,14 @@ export var EnigmailKeyRing = {
     if (level < 0) {
       return level;
     }
-    return this._getAcceptanceLevelForEmail(keyObj, emailAddr);
+    const answer = await this._getAcceptanceLevelForEmail(keyObj, emailAddr);
+    if (details) {
+      // Provenance reaches a caller only when it asks for it. See
+      // `_getAcceptanceLevelForEmail()`: the value is the same either way today,
+      // and Item 88c is the change that makes the source matter.
+      details.source = answer.source;
+    }
+    return answer.level;
   },
 
   /**
@@ -1895,28 +1902,154 @@ export var EnigmailKeyRing = {
     return 0; // no problem found
   },
 
+  /**
+   * What this build believes about a key for an address, and where that came
+   * from.
+   *
+   * **Two sources, one vocabulary.** Design 13.6: "for a GnuPG key the value is
+   * GnuPG's computed answer, displayed as such; for an internal key it is the
+   * user's declaration. One vocabulary, two sources, each labelled." This is the
+   * labelling. `level` is unchanged from before -- still the value the store
+   * holds -- and `source` says which engine *would* answer for this key.
+   *
+   * **Why the value does not move yet.** The step is deliberately separable: no
+   * send can behave differently because of it, so it can be verified alone and
+   * cannot break an existing test. Item 88c is the change that makes the source
+   * decide the value.
+   *
+   * **The rule that matters, and it is about `null`.** `GPGME.getOwnerTrust()`
+   * answers `null` when GnuPG is uninitialised, does not hold the key, or has no
+   * record of it -- a third answer, distinct from `UNKNOWN`, which is 0 and is a
+   * real value. `null` therefore means *ask the store*, never *refuse*. Read the
+   * other way, every user of the internal engine who has asked for strict trust
+   * would lose the ability to send the moment the external ring went quiet,
+   * which is why the fallback is the point of this function rather than a detail
+   * of it.
+   *
+   * A key whose secret half is in this profile is the user's own declaration in
+   * every case: `getKeyAcceptanceLevelForEmail()` refuses to answer for one, and
+   * marking it personal is a statement this build makes about the user's key
+   * rather than one gpg computes.
+   *
+   * @param {EnigmailKeyObj} keyObj
+   * @param {string} emailAddr
+   * @returns {Promise<{level: integer, source: "gnupg"|"store"}>}
+   */
   async _getAcceptanceLevelForEmail(keyObj, emailAddr) {
-    let acceptanceLevel;
+    let level;
     if (keyObj.secretAvailable) {
       const isPersonal = await lazy.PgpSqliteDb2.isAcceptedAsPersonalKey(
         keyObj.fpr
       );
       if (isPersonal) {
-        acceptanceLevel = OpenPgpConstants.OpenPgpValidity.ULTIMATE;
+        level = OpenPgpConstants.OpenPgpValidity.ULTIMATE;
       } else {
         // A private key that is not accepted as personal is refused. Expressed
         // as NEVER rather than as a negative, because this is a trust decision
         // and belongs in the same vocabulary as the rest.
-        acceptanceLevel = OpenPgpConstants.OpenPgpValidity.NEVER;
+        level = OpenPgpConstants.OpenPgpValidity.NEVER;
       }
     } else {
-      acceptanceLevel = await this.getKeyAcceptanceLevelForEmail(
-        keyObj,
-        emailAddr
-      );
+      level = await this.getKeyAcceptanceLevelForEmail(keyObj, emailAddr);
     }
 
-    return acceptanceLevel;
+    return { level, source: this._trustSourceFor(keyObj) };
+  },
+
+  /**
+   * Which engine would answer the trust question for a key: `"gnupg"` or
+   * `"store"`.
+   *
+   * Asked of gpg only when the build is configured to use it and gpg actually
+   * has a record. Anything else -- including a key whose secret half is here --
+   * is the store's, because that is where the user's declaration lives.
+   *
+   * A read, not a query: `getOwnerTrust()` lists one key and reads a field off
+   * the record it already has, and returns `null` rather than throwing when gpg
+   * is unavailable. That is why this needs no try/catch of its own.
+   *
+   * @param {EnigmailKeyObj} keyObj
+   * @returns {"gnupg"|"store"}
+   */
+  _trustSourceFor(keyObj) {
+    if (keyObj.secretAvailable) {
+      return "store";
+    }
+    if (
+      !Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg", false)
+    ) {
+      return "store";
+    }
+    return lazy.GPGME.getOwnerTrust(keyObj.fpr) === null ? "store" : "gnupg";
+  },
+
+  /**
+   * The level the strict policy judges a key by, asked of GnuPG where GnuPG has
+   * an answer.
+   *
+   * **Why this exists, and what it is not.** `isValidKeyForRecipient()` answers
+   * from this build's acceptance store, which for a key GnuPG holds was filled
+   * with `unverified` by `_autoAcceptGnuPGKey()` without asking anyone -- so the
+   * strict policy was judging such a key by a value no human chose. Under the
+   * strict policy the question is put to GnuPG instead, which is the decision
+   * recorded in design 13.6 and in Item 88c.
+   *
+   * **Two GnuPG answers, and one of them is not enough.** Measured 2026-10-26
+   * against gpg 2.4.4:
+   *
+   *   - declaring ownertrust **ULTIMATE** raises the key's validity to `u`;
+   *   - declaring ownertrust **FULL** leaves validity where it was -- `-` for a
+   *     key nobody has signed;
+   *   - a certification from an ultimately-trusted key raises validity to `f`.
+   *
+   * So Item 88c's own argument -- that owner trust and certification are two
+   * inputs to one result -- holds only for ULTIMATE. `FULL` means "I trust this
+   * person to introduce others", which is not the same statement as "this key is
+   * sound", and gpg is right not to treat it as one. Accepting **either** answer
+   * is therefore deliberate: both are GnuPG's own databases, neither is ours, and
+   * a user who has said "fully trusted" in the Key Manager has said something
+   * that must count.
+   *
+   * **The permissive policy never reaches here.** It keeps the store's answer, so
+   * a key whose validity gpg has not computed stays usable -- which is the point
+   * of permissive, and would have been broken by switching the value globally.
+   *
+   * @param {EnigmailKeyObj} keyObj
+   * @param {string} emailAddr
+   * @param {boolean} allowExpired
+   * @returns {Promise<integer>} The level to judge by: a trusted value from
+   *   GnuPG when it has one, otherwise the store's answer unchanged.
+   */
+  async _strictLevelFor(keyObj, emailAddr, allowExpired) {
+    const storeLevel = await this.isValidKeyForRecipient(
+      keyObj,
+      emailAddr,
+      allowExpired
+    );
+    // A hard invalid -- revoked, expired, no encryption subkey, no matching
+    // user ID -- is not a trust question and GnuPG is not asked about it.
+    if (storeLevel === OpenPgpConstants.OpenPgpValidity.INVALID) {
+      return storeLevel;
+    }
+    if (this._trustSourceFor(keyObj) != "gnupg") {
+      return storeLevel;
+    }
+
+    // What gpg computed, first: a certification is the statement the strict
+    // policy is really asking for, and an ultimately-trusted key carries it as
+    // ULTIMATE.
+    const validity = lazy.GPGME.getUserIdValidity(keyObj.fpr, emailAddr);
+    if (OpenPgpConstants.isValidityTrusted(validity)) {
+      return validity;
+    }
+    // What the user declared, second. Not redundant: ownertrust FULL does not
+    // raise validity, and refusing a key the user marked fully trusted would be
+    // this build second-guessing a statement made in its own interface.
+    const ownerTrust = lazy.GPGME.getOwnerTrust(keyObj.fpr);
+    if (OpenPgpConstants.isValidityTrusted(ownerTrust)) {
+      return ownerTrust;
+    }
+    return storeLevel;
   },
 
   /**
@@ -1957,11 +2090,13 @@ export var EnigmailKeyRing = {
     const keyList = await this.getCandidateKeysForEmail(emailAddr);
 
     for (const keyObj of keyList) {
-      const acceptanceLevel = await this.isValidKeyForRecipient(
-        keyObj,
-        emailAddr,
-        false
-      );
+      // Under the strict policy the level is asked of GnuPG rather than of this
+      // build's acceptance row; under the permissive policy it is the row, as
+      // before. Item 88c: one question for the policy that asks for judgment,
+      // and no change at all for the policy that does not.
+      const acceptanceLevel = this.requiresTrustedKeys()
+        ? await this._strictLevelFor(keyObj, emailAddr, false)
+        : await this.isValidKeyForRecipient(keyObj, emailAddr, false);
 
       // An explicit test of the acceptable values, not a threshold.
       //
@@ -2050,6 +2185,88 @@ export var EnigmailKeyRing = {
       default:
         return "undecided";
     }
+  },
+
+  /**
+   * Certify another party's key, wherever that key lives (Item 88a).
+   *
+   * **The engine has to be the one that owns the key**, because validity is what
+   * gpg computes from the signatures it can see. For a key GnuPG holds the
+   * signature is made there, by `GPGME.signKey()`, and gpg's own validity moves
+   * as a result. For a key only this build holds, `RNP.certifyKey()` signs it in
+   * the profile ring and the signature never reaches gpg -- so the statement is
+   * recorded where the strict gate actually reads it, as an acceptance decision
+   * of `verified`.
+   *
+   * **Why `verified` rather than `unverified`.** Signing a key is a deliberate,
+   * checkable statement that this key belongs to that address, which is a
+   * stronger thing than "I will use it anyway". `_autoAcceptGnuPGKey()` records
+   * `unverified` for a key the user merely happens to hold, and conflating the
+   * two would make the weaker act grant the stronger status.
+   *
+   * **An existing rejection is never overridden.** A user who has rejected a key
+   * has said not to use it, and a certification is about identity rather than
+   * about permission; silently turning a rejection into acceptance would be the
+   * kind of quiet reversal this build avoids elsewhere.
+   *
+   * @param {string} signerFpr - The user's key.
+   * @param {string} targetFpr - The key being certified.
+   * @param {string} userId - The target's user ID, or its address.
+   * @returns {Promise<{ok: boolean, where: "gnupg"|"store", error?: string}>}
+   */
+  async certifyKey(signerFpr, targetFpr, userId) {
+    if (!signerFpr || !targetFpr) {
+      return { ok: false, where: "store", error: "missing fingerprint" };
+    }
+    const target = targetFpr.replace(/^0x/i, "").toUpperCase();
+
+    // Asked of gpg first, because that is the answer that makes the signature
+    // count. `getOwnerTrust()` returns null when gpg does not hold the key,
+    // which is the same discrimination Item 88b relies on.
+    if (
+      Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg", false) &&
+      lazy.GPGME.getOwnerTrust(target) !== null
+    ) {
+      const result = lazy.GPGME.signKey(signerFpr, target, userId ?? "");
+      if (!result.ok) {
+        return { ok: false, where: "gnupg", error: result.output };
+      }
+      // gpg's validity is a computed field, but `gpgme_op_keysign` updates the
+      // trust database as part of the operation -- measured, unlike a
+      // certification made outside gpg. Nothing to nudge here.
+      this.clearCache();
+      this.clearGnuPgKeyCache();
+      return { ok: true, where: "gnupg" };
+    }
+
+    const signed = await lazy.RNP.certifyKey(signerFpr, target, userId);
+    if (!signed) {
+      return { ok: false, where: "store", error: "the signature failed" };
+    }
+
+    // The signature is real and gpg cannot see it, so the judgment has to be
+    // written where the gate reads it.
+    const email = lazy.EnigmailFuncs.getEmailFromUserID(userId) || userId;
+    if (email?.includes("@")) {
+      try {
+        const existing = {};
+        await lazy.PgpSqliteDb2.getAcceptance(target, email, existing);
+        const decided =
+          existing.fingerprintAcceptance == "rejected" ||
+          existing.fingerprintAcceptance == "verified";
+        if (!decided) {
+          await lazy.PgpSqliteDb2.updateAcceptance(target, [email], "verified");
+        }
+      } catch (ex) {
+        lazy.log.warn(
+          `Recording acceptance after certifying ${target} failed`,
+          ex
+        );
+      }
+    }
+
+    this.clearCache();
+    return { ok: true, where: "store" };
   },
 
   async getKeyAcceptanceLevelForEmail(keyObj, email) {
@@ -2215,7 +2432,12 @@ export var EnigmailKeyRing = {
             // under the permissive policy; refusing on it would make a
             // permissive default unusable.
             if (!foundError && lazy.OpenPGPAlias.requiresEncryption(addr)) {
-              const level = await this.isValidKeyForRecipient(key, addr, false);
+              // Inherently a strict question -- a rule demanding encryption asks
+              // whether the key is good enough for it -- so it goes through the
+              // same GnuPG consultation the strict policy uses. Before this, a
+              // rule's own requirement was judged by the acceptance row while
+              // the policy beside it was judged by nothing at all.
+              const level = await this._strictLevelFor(key, addr, false);
               if (!OpenPgpConstants.isValidityTrusted(level)) {
                 foundError = true;
                 keyMissing = true;

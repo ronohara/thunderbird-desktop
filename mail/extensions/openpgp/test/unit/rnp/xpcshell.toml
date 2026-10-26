@@ -131,6 +131,11 @@ run-sequentially = true  # writes the profile-global acceptance store and a rule
 
 ["test_transferableSecretKey.js"]
 
+["test_trustProvenance.js"]
+
+["test_userIdValidity.js"]
+skip-if = ["os != 'linux'"]
+
 ["test_userIds.js"]
 
 ["test_v5Support.js"]

@@ -240,15 +240,18 @@ add_task(async function strictRefusesEveryRecipientWhenNothingIsJudged() {
 });
 
 /**
- * Block 3, route one: owner trust. **Measured, and it does not work.**
+ * Block 3, route one: owner trust. **Wired 2026-10-26 by Item 88c.**
  *
- * Item 88 sets gpg's ownertrust for a keyring key. The strict gate reads
- * Thunderbird's acceptance row instead -- which `_autoAcceptGnuPGKey()` filled
- * with "unverified" without asking -- so the control has no effect on sending.
- * That is the finding this item exists to make; the assertion pins the current
- * behaviour so fixing it fails here first.
+ * This test used to pin the opposite: ownertrust was recorded by gpg and the
+ * strict gate still refused, because the gate read Thunderbird's acceptance row
+ * -- which `_autoAcceptGnuPGKey()` had filled with "unverified" without asking
+ * anyone. That was the finding the item existed to make, and the pinned
+ * assertion failed on the day the wiring landed, as it was written to.
+ *
+ * The gate now asks GnuPG, so the control takes effect: a key whose owner trust
+ * the user has declared ULTIMATE is acceptable under the strict policy.
  */
-add_task(async function ownerTrustDoesNotYetSatisfyTheStrictGate() {
+add_task(async function ownerTrustSatisfiesTheStrictGate() {
   if (!externalAvailable) {
     info("SKIPPED: no external GnuPG on this machine.");
     Assert.ok(true, "skipped");
@@ -285,21 +288,60 @@ add_task(async function ownerTrustDoesNotYetSatisfyTheStrictGate() {
       `missing=${after.missing}, errors=${JSON.stringify(after.errors)}`
   );
   Assert.ok(
-    after.missing,
-    "FINDING (pinned): ownertrust is recorded by gpg but the strict gate " +
-      "still refuses, because the gate reads the acceptance row rather than " +
-      "gpg's trust database. When this assertion fails, the two are wired " +
-      "and this file must be updated."
+    !after.missing,
+    "ownertrust declared in gpg satisfies the strict gate"
+  );
+  Assert.deepEqual(
+    after.errors,
+    [],
+    "and no refusal is reported for the address"
+  );
+
+  // The refusal comes back when the declaration is withdrawn, which is what
+  // separates "the gate reads gpg" from "the gate stopped refusing anything".
+  // NEVER rather than UNKNOWN: gpg's ownertrust scale has no value for
+  // "nobody has looked", which is why setOwnerTrust refuses to write 0.
+  const reset = await GnuPGAgent.setOwnerTrust(
+    GNUPG_FPR,
+    OpenPgpValidity.NEVER
+  );
+  Assert.ok(reset.ok, `ownertrust was withdrawn: ${reset.output}`);
+  EnigmailKeyRing.clearCache();
+  EnigmailKeyRing.clearGnuPgKeyCache();
+  const withdrawn = await resolve(GNUPG_ADDRESS);
+  info(
+    `FINDING owner-trust withdrawn: missing=${withdrawn.missing}, ` +
+      `errors=${JSON.stringify(withdrawn.errors)}`
+  );
+  Assert.ok(
+    withdrawn.missing,
+    "and withdrawing it refuses the key again, so the gate follows the value"
   );
 });
 
 /**
- * Block 3, route two: certifying. **Measured, and it does not work either.**
+ * Block 3, route two: certifying a key only this build holds. **Wired
+ * 2026-10-26 by Item 88a, as a recorded acceptance.**
  *
- * A certification adds a signature to the key; the gate reads the acceptance
- * row. So the signature is real and the gate does not see it.
+ * Two earlier findings are recorded here because both were true and both were
+ * incomplete, and the sequence is the point:
+ *
+ *   1. "The gate reads the acceptance row, so it cannot see the signature."
+ *   2. "A certification writes to neither store, so neither engine can act on
+ *      it." That was measured after the gate was wired, and it is why wiring
+ *      the gate alone left this route closed.
+ *
+ * The fix is a decision about what certifying *does*: for a key only this build
+ * holds, the signature is real and gpg will never see it, so the judgment is
+ * recorded where the gate reads it -- an acceptance of `verified`. Signing a key
+ * is a deliberate, checkable claim that it belongs to that address, which is
+ * stronger than the `unverified` that holding a key in GnuPG confers.
+ *
+ * Bob is the store's case: he is in the profile ring and deliberately not in
+ * gpg's. The next test covers the other case, where the signature has to be
+ * made inside gpg.
  */
-add_task(async function certifyingDoesNotYetSatisfyTheStrictGate() {
+add_task(async function certifyingAProfileKeySatisfiesTheStrictGate() {
   Services.prefs.setBoolPref(STRICT_PREF, true);
 
   const before = RNP.getUidSignatureCount(UNJUDGED_FPR, UNJUDGED);
@@ -311,22 +353,144 @@ add_task(async function certifyingDoesNotYetSatisfyTheStrictGate() {
     do_get_file(`${keyDir}/alice@openpgp.example-0xf231550c4f47e38e-secret.asc`)
   );
   EnigmailKeyRing.clearCache();
-  const done = await RNP.certifyKey(GNUPG_FPR, UNJUDGED_FPR, UNJUDGED);
-  Assert.ok(done, "the certification was made");
+  // Through the dispatcher, which is what the panel now calls: it sends the
+  // operation to the engine that owns the key and records the judgment where
+  // the gate reads it.
+  const done = await EnigmailKeyRing.certifyKey(
+    GNUPG_FPR,
+    UNJUDGED_FPR,
+    UNJUDGED
+  );
+  info(`FINDING dispatcher result: ${JSON.stringify(done)}`);
+  Assert.ok(done.ok, `the certification was made: ${done.error ?? ""}`);
   const after = RNP.getUidSignatureCount(UNJUDGED_FPR, UNJUDGED);
   Assert.equal(after, before + 1, "and the key carries one more signature");
+
+  EnigmailKeyRing.clearCache();
+  EnigmailKeyRing.clearGnuPgKeyCache();
 
   const outcome = await resolve(UNJUDGED);
   info(
     `FINDING certify route: signatures ${before} -> ${after}, strict gate ` +
       `missing=${outcome.missing}, errors=${JSON.stringify(outcome.errors)}`
   );
-  Assert.ok(
-    outcome.missing,
-    "FINDING (pinned): a certification does not satisfy the strict gate " +
-      "either, for the same reason -- the gate reads acceptance, not the " +
-      "signatures"
+
+  // The premise, asserted rather than assumed: Bob must not be in GnuPG, or
+  // this test would be measuring a different situation from the one it
+  // describes.
+  Assert.equal(
+    GPGME.getOwnerTrust(UNJUDGED_FPR),
+    null,
+    "the certified key is not one GnuPG holds, so the gate asks the store"
   );
+
+  // Before Item 88a this was `outcome.missing` -- the signature was real and
+  // nothing read it. The certification now records an acceptance, which is the
+  // statement the store can act on.
+  Assert.ok(
+    !outcome.missing,
+    "a certification of a profile-held key satisfies the strict gate"
+  );
+  Assert.deepEqual(outcome.errors, [], "with no refusal reported");
+});
+
+/**
+ * Certifying a key **GnuPG holds**: the signature is made where the key lives.
+ *
+ * This is the case that could not work at all before Item 88a. Carol's public
+ * key is imported into gpg and deliberately *not* into the profile ring -- Item
+ * 8's guard refuses a key GnuPG already holds -- so `RNP.certifyKey()` cannot
+ * even see it, and before the dispatcher existed this operation failed outright.
+ *
+ * Alice signs, because she is the ultimately-trusted key in this home: a
+ * signature from a key gpg does not trust would raise nothing.
+ *
+ * Eddie's fixture was the first choice and was the wrong one -- his key is
+ * **expired**, so it never becomes a candidate and the test would have measured
+ * an expiry rather than a certification.
+ */
+add_task(async function certifyingAGnuPGHeldKeySatisfiesTheStrictGate() {
+  if (!externalAvailable) {
+    info("SKIPPED: no external GnuPG on this machine.");
+    Assert.ok(true, "skipped");
+    return;
+  }
+
+  const carolPublic = "carol@example.com-0x3099ff1238852b9f-pub.asc";
+  const carolFpr = "B8F2F6F4BD3AD3F82DC446833099FF1238852B9F";
+  const carolAddress = "carol@example.com";
+
+  // Deliberately not into the profile: this test is about the external arm.
+  // `runGpg()` here returns stdout rather than a result object, so the import is
+  // confirmed by asking gpg about the key afterwards.
+  await runGpg(["--import", do_get_file(`${keyDir}/${carolPublic}`).path]);
+  Assert.notEqual(
+    GPGME.getOwnerTrust(carolFpr),
+    null,
+    "gpg now holds the target key"
+  );
+
+  // Resolved through the candidate list, which is the route the gate walks: a
+  // gpg-held key has no object in the profile ring.
+  const candidates =
+    await EnigmailKeyRing.getCandidateKeysForEmail(carolAddress);
+  const carol = candidates.find(k => k.fpr.toUpperCase() == carolFpr);
+  Assert.ok(carol, `the gpg-held key is a candidate for ${carolAddress}`);
+  // `getKeyById()` resolves a gpg-held key too -- through the transient cache
+  // `loadGnuPgKeysForEmail()` fills -- so it is *not* evidence about whether
+  // RNP's own store has the key, and this test does not use it as such. What
+  // matters is which engine the dispatcher chooses, asserted below.
+
+  // A signature only raises validity when the *signer* is trusted, so Alice
+  // has to be ultimately trusted in this home first. The owner-trust test above
+  // deliberately leaves her at NEVER, which is why this is stated rather than
+  // assumed -- and it is gpg's web of trust doing its job, not a test
+  // convenience.
+  const trustSet = await GnuPGAgent.setOwnerTrust(
+    GNUPG_FPR,
+    OpenPgpValidity.ULTIMATE
+  );
+  Assert.ok(
+    trustSet.ok,
+    `the signer is ultimately trusted: ${trustSet.output}`
+  );
+  await runGpg(["--check-trustdb"]);
+
+  Services.prefs.setBoolPref(STRICT_PREF, true);
+  const before = await resolve(carolAddress);
+  info(`FINDING gpg-held key before certifying: ${JSON.stringify(before)}`);
+  Assert.ok(before.missing, "refused under strict before any certification");
+
+  const signed = await EnigmailKeyRing.certifyKey(
+    GNUPG_FPR,
+    carolFpr,
+    carolAddress
+  );
+  info(`FINDING certify via dispatcher: ${JSON.stringify(signed)}`);
+  Assert.ok(signed.ok, `the certification was made: ${signed.error ?? ""}`);
+  Assert.equal(
+    signed.where,
+    "gnupg",
+    "in gpg, because that is where the key lives"
+  );
+
+  const validity = GPGME.getUserIdValidity(carolFpr, carolAddress);
+  info(
+    `FINDING validity after certifying: ${validity} ` +
+      `(FULL is ${OpenPgpValidity.FULL}, ULTIMATE ${OpenPgpValidity.ULTIMATE})`
+  );
+
+  const after = await resolve(carolAddress);
+  info(`FINDING gpg-held key after certifying: ${JSON.stringify(after)}`);
+  Assert.ok(
+    !after.missing,
+    "and the strict gate accepts the key it had just refused"
+  );
+
+  // Put the signer's ownertrust back, so a later test does not inherit a
+  // premise it did not set.
+  await GnuPGAgent.setOwnerTrust(GNUPG_FPR, OpenPgpValidity.NEVER);
+  await runGpg(["--check-trustdb"]);
 });
 
 /**
@@ -374,6 +538,15 @@ add_task(async function theRulesMechanism() {
       encrypt: "always",
     },
   ]);
+  // The boundary needs an *untrusted* key, and by the time this runs Bob has
+  // been certified by the test above -- Item 88a records an acceptance of
+  // `verified` when a profile-held key is signed, which is exactly the behaviour
+  // that test exists to prove. So the premise is re-established here rather than
+  // inherited, and a failure below is about the rule rather than about what an
+  // earlier test did.
+  await PgpSqliteDb2.updateAcceptance(UNJUDGED_FPR, [UNJUDGED], "unverified");
+  EnigmailKeyRing.clearCache();
+
   Services.prefs.setBoolPref(STRICT_PREF, true);
   const boundary = await resolve(UNJUDGED);
   info(`FINDING boundary: ${JSON.stringify(boundary)}`);

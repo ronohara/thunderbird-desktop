@@ -43,6 +43,69 @@ export var GPGME = {
   },
 
   /**
+   * The live GPGMELib wrapper, for diagnostics and for tests that need the raw
+   * listing.
+   *
+   * `GPGMELibLoader.init()` throws when called a second time -- the library is
+   * loaded once for the process -- so a caller that wants the instance cannot
+   * simply ask the loader after `init()` has run. This returns the one that is
+   * already in use.
+   *
+   * Read-only in intent and it forces no initialisation: before `init()` the
+   * answer is undefined, which is the honest answer.
+   *
+   * The same shape as `RNP.getRNPLib()`, added for Item 95a's experiment for
+   * the same reason.
+   *
+   * @returns {?object}
+   */
+  getGPGMELib() {
+    return GPGMELib;
+  },
+
+  /**
+   * Certify a key that GnuPG holds (Item 88a).
+   *
+   * The operation is gpg's because validity is gpg's to compute: a signature
+   * made against a key in this build's ring is invisible to the engine that
+   * decides whether the key is good enough to encrypt to. See
+   * `GPGMELib.signKey()` for why that matters.
+   *
+   * Fails closed when gpg is unavailable or does not hold either key, and says
+   * which of those it was in the output, because a caller that cannot sign has
+   * to tell the user something they can act on.
+   *
+   * @param {string} signerFpr - The user's own key, which gpg must have with its
+   *   secret part.
+   * @param {string} targetFpr - The key being certified.
+   * @param {string} [userid=""] - The user ID to certify; empty certifies all.
+   * @returns {{ok: boolean, output: string}}
+   */
+  signKey(signerFpr, targetFpr, userid = "") {
+    if (!this.init()) {
+      return { ok: false, output: "GnuPG is not available" };
+    }
+    const lib = this.getGPGMELib();
+    if (!lib || typeof lib.signKey != "function") {
+      return { ok: false, output: "gpgme does not support signing keys here" };
+    }
+    try {
+      const result = lib.signKey(signerFpr, targetFpr, userid);
+      if (result.ok) {
+        return { ok: true, output: "certified" };
+      }
+      return {
+        ok: false,
+        output: result.error
+          ? this.strerror(result.error)
+          : "GnuPG does not hold both keys",
+      };
+    } catch (ex) {
+      return { ok: false, output: ex.message };
+    }
+  },
+
+  /**
    * gpgme's own wording for an error code.
    *
    * gpgme returns a packed number, and a number tells a user nothing. The
@@ -193,6 +256,53 @@ export var GPGME = {
     // rather than by being the only result.
     const match = keys.find(k => k.fpr == wanted);
     return match ? match.ownerTrust : null;
+  },
+
+  /**
+   * What gpg computes about an address on a key: its user-ID validity.
+   *
+   * **A different answer from `getOwnerTrust()`, which is why both exist.** Owner
+   * trust is what the user *declared*; validity is what gpg *computed* from the
+   * certifications it can see. They move for different reasons: declaring a key
+   * fully trusted raises validity at the next trust-database computation, and so
+   * does signing the key with an ultimately-trusted key. Item 88a and Item 92
+   * produce the second kind of change, so a gate that asked only for owner trust
+   * could not see their effect.
+   *
+   * The value is one of `OpenPgpValidity`, gpgme having the same six numbers.
+   *
+   * **Null is a third answer, not a value.** It means GnuPG is not initialised,
+   * does not hold the key, or holds the key without this address. A caller must
+   * not read it as `UNKNOWN`: for a key with no gpg record, the right answer is
+   * the one in this build's own store, and treating absence as "no trust" would
+   * refuse every recipient of a user who has no external ring at all.
+   *
+   * @param {string} fingerprint - Primary key fingerprint.
+   * @param {string} email - The address to read, matched case-insensitively.
+   * @returns {?integer} One of `OpenPgpValidity`, or null when gpg has no answer
+   *   for this key and address.
+   */
+  getUserIdValidity(fingerprint, email) {
+    if (!fingerprint || !email || !this.init()) {
+      return null;
+    }
+    const wanted = fingerprint.replace(/^0x/i, "").toUpperCase();
+    const address = email.toLowerCase();
+    let keys;
+    try {
+      keys = GPGMELib.listKeys(wanted, false);
+    } catch (ex) {
+      console.warn("Listing GnuPG keys to read user-ID validity failed", ex);
+      return null;
+    }
+    // Picked by fingerprint rather than taken as the only result: the pattern
+    // is a search, so it can also match a subkey or a user ID containing it.
+    const key = keys.find(k => k.fpr == wanted);
+    if (!key?.uids) {
+      return null;
+    }
+    const uid = key.uids.find(u => u.email == address);
+    return uid ? uid.validity : null;
   },
 
   /**

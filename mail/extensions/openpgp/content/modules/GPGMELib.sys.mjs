@@ -389,7 +389,10 @@ function enableGPGMELibJS() {
      * @param {Function} keyFilterFunction - An optional test function called
      *   for each candidate key. Called with a {gpgme_key_t} parameter.
      *
-     * @returns {object[]} - { fpr, emails } for each matching key.
+     * @returns {object[]} - { fpr, emails, ownerTrust, uids } for each matching
+     *   key. `emails` is the plain address list; `uids` carries each address
+     *   with the validity gpg computed for it, which is a different answer from
+     *   `ownerTrust`: declared versus computed.
      */
     listKeys(pattern, secret = false, keyFilterFunction = undefined) {
       const keys = [];
@@ -415,11 +418,22 @@ function enableGPGMELibJS() {
         if (key.contents.protocol == GPGMELib.GPGME_PROTOCOL_OpenPGP) {
           if (!keyFilterFunction || keyFilterFunction(key)) {
             const emails = [];
+            // Per user ID, alongside `emails` rather than replacing it. The two
+            // are the same list of addresses, and only this one carries what
+            // gpg computed about each: `validity` is the number a certification
+            // moves, and it is what the strict gate asks for (Item 88c).
+            //
+            // A parallel array rather than a richer `emails`, because four
+            // consumers read `emails` as a list of strings and a change there
+            // would reach all of them for nothing.
+            const uids = [];
             let nextUid = key.contents.uids;
             while (nextUid && !nextUid.isNull()) {
               const uidEmail = nextUid.contents.email;
               if (!uidEmail.isNull()) {
-                emails.push(uidEmail.readString().toLowerCase());
+                const email = uidEmail.readString().toLowerCase();
+                emails.push(email);
+                uids.push({ email, validity: nextUid.contents.validity });
               }
               nextUid = nextUid.contents.next;
             }
@@ -448,6 +462,7 @@ function enableGPGMELibJS() {
               // between the two vocabularies -- which is why Item 88 can drive
               // gpg's own database instead of keeping a second copy of trust.
               ownerTrust: key.contents.owner_trust,
+              uids,
             });
           }
         }
@@ -461,6 +476,175 @@ function enableGPGMELibJS() {
 
       this.gpgme_release(c1);
       return keys;
+    },
+
+    /**
+     * Certify a key in GnuPG's own keyring (Item 88a).
+     *
+     * **Why this belongs here rather than in this build's ring.** gpg computes a
+     * key's validity from the signatures *it* can see. A certification made
+     * against a key that only this build holds is therefore invisible to the
+     * engine that decides whether the key is good enough to encrypt to -- which
+     * is why Item 88c could wire the gate and still leave certification with no
+     * effect. Signing where the key lives needs no export, no import and no
+     * trust-database nudge: gpg updates its own trust database as part of the
+     * operation.
+     *
+     * `userid` is the address or the full user-ID string to certify, and an
+     * empty value certifies every user ID, which is what gpg's own `--quick-sign-key`
+     * does by default. Named rather than implied, because certifying every ID
+     * on a key that carries several is a bigger statement than the caller may
+     * intend.
+     *
+     * @param {string} signerFpr - Fingerprint of the key that signs.
+     * @param {string} targetFpr - Fingerprint of the key being certified.
+     * @param {string} [userid=""] - The user ID to certify; empty means all.
+     * @returns {{ok: boolean, error?: integer}}
+     */
+    signKey(signerFpr, targetFpr, userid = "") {
+      const signer = signerFpr.replace(/^0x/i, "").toUpperCase();
+      const target = targetFpr.replace(/^0x/i, "").toUpperCase();
+      if (!signer || !target) {
+        return { ok: false };
+      }
+
+      const ctx = new gpgme_ctx_t();
+      if (this.gpgme_new(ctx.address())) {
+        throw new Error("gpgme_new failed");
+      }
+
+      let signerKey = null;
+      let targetKey = null;
+      try {
+        signerKey = this._keyForFingerprint(signer);
+        if (!signerKey) {
+          // The signer has to be in gpg's own keyring for this to be gpg's
+          // decision rather than ours; refusing is the honest answer.
+          return { ok: false };
+        }
+        const added = this.gpgme_signers_add(ctx, signerKey);
+        if (added) {
+          return { ok: false, error: added };
+        }
+
+        targetKey = this._keyForFingerprint(target);
+        if (!targetKey) {
+          return { ok: false };
+        }
+
+        // gpg matches the user ID **exactly**, and an address is not a user ID:
+        // the string on Carol's key is "Carol <carol@example.com>", so asking
+        // for "carol@example.com" answers "No user ID". The address a caller
+        // works from is therefore resolved to the string the key actually
+        // carries, and an address that matches nothing certifies every ID --
+        // which is what gpg's own `--quick-sign-key` does when given no uid.
+        const uidText = this._uidFor(targetKey, userid);
+
+        // expire 0: a certification that never expires, which is what the
+        // internal path also produces and what a user signing a key expects.
+        // flags 0: gpg's defaults, as `--quick-sign-key` uses.
+        //
+        // A NULL pointer, not an empty string, is how gpgme is told "every user
+        // ID": an empty C string is a uid that matches nothing. Passing "" is
+        // what produced "No user ID" on the first run of this.
+        const rv = this.gpgme_op_keysign(
+          ctx,
+          targetKey,
+          uidText ? ctypes.char.array()(uidText) : ctypes.char.ptr(),
+          0,
+          0
+        );
+        return rv ? { ok: false, error: rv } : { ok: true };
+      } finally {
+        if (targetKey) {
+          this.gpgme_key_release(targetKey);
+        }
+        if (signerKey) {
+          this.gpgme_key_release(signerKey);
+        }
+        this.gpgme_signers_clear(ctx);
+        this.gpgme_release(ctx);
+      }
+    },
+
+    /**
+     * The user-ID string on a key that a caller's `userid` refers to, or null
+     * for "every user ID".
+     *
+     * gpg compares user IDs exactly, so an address has to be translated into
+     * the string the key carries. An exact match wins; otherwise the first user
+     * ID containing the address as its `email` wins; otherwise null.
+     *
+     * @param {gpgme_key_t} keyHandle
+     * @param {string} userid
+     * @returns {?string}
+     */
+    _uidFor(keyHandle, userid) {
+      const wanted = (userid ?? "").trim();
+      if (!wanted) {
+        return null;
+      }
+      const wantedLower = wanted.toLowerCase();
+      let firstByAddress = null;
+      let uid = keyHandle.contents.uids;
+      while (uid && !uid.isNull()) {
+        const text = uid.contents.uid.isNull()
+          ? ""
+          : uid.contents.uid.readString();
+        const email = uid.contents.email.isNull()
+          ? ""
+          : uid.contents.email.readString().toLowerCase();
+        if (text == wanted) {
+          return text;
+        }
+        if (!firstByAddress && email && email == wantedLower) {
+          firstByAddress = text;
+        }
+        uid = uid.contents.next;
+      }
+      return firstByAddress;
+    },
+
+    /**
+     * A released-by-the-caller gpgme key handle for one fingerprint, or null.
+     *
+     * Picked by fingerprint from a listing rather than taken as the only result:
+     * the pattern is a search, so it can match a subkey or a user ID containing
+     * the string.
+     *
+     * @param {string} fpr - Upper-case primary fingerprint.
+     * @returns {?gpgme_key_t}
+     */
+    _keyForFingerprint(fpr) {
+      const ctx = new gpgme_ctx_t();
+      if (this.gpgme_new(ctx.address())) {
+        throw new Error("gpgme_new failed");
+      }
+      try {
+        if (this.gpgme_op_keylist_start(ctx, fpr, 0)) {
+          return null;
+        }
+        while (true) {
+          const key = new gpgme_key_t();
+          const rv = this.gpgme_op_keylist_next(ctx, key.address());
+          if (rv & GPGMELib.GPG_ERR_EOF) {
+            return null;
+          }
+          if (rv) {
+            return null;
+          }
+          const got = key.contents.fpr.isNull()
+            ? ""
+            : key.contents.fpr.readString().toUpperCase();
+          if (got == fpr) {
+            return key;
+          }
+          this.gpgme_key_release(key);
+        }
+      } finally {
+        this.gpgme_op_keylist_end(ctx);
+        this.gpgme_release(ctx);
+      }
     },
 
     gpgme_check_version: libgpgme.declare(
@@ -516,6 +700,40 @@ function enableGPGMELibJS() {
       "gpgme_op_keylist_end",
       abi,
       gpgme_error_t,
+      gpgme_ctx_t
+    ),
+
+    // Certifying a key that GnuPG holds (Item 88a). Declared here because gpg
+    // computes validity from the signatures in *its* keyring: a signature made
+    // against a key that only this build holds is invisible to it, so the
+    // operation has to happen where the key lives.
+    //
+    // `gpgme_op_keysign(ctx, key, userid, expire, flags)` returns
+    // `gpgme_error_t`, and `gpgme_signers_add` supplies the key that signs.
+    // Both are in the shipped library -- measured with `nm -D` against
+    // libgpgme.so.11, GPGME_1.1 -- which is the same finding as Item 95: the
+    // symbol was there and only the declaration was missing.
+    gpgme_op_keysign: libgpgme.declare(
+      "gpgme_op_keysign",
+      abi,
+      gpgme_error_t,
+      gpgme_ctx_t,
+      // `gpgme_key_t` is already a pointer; the struct is `_gpgme_key`, so the
+      // bare `gpgme_key_t` is the parameter type gpgme expects here.
+      gpgme_key_t,
+      ctypes.char.ptr,
+      ctypes.unsigned_long,
+      ctypes.unsigned_int
+    ),
+
+    // `gpgme_signers_add` already exists further down this table -- it was
+    // bound for Item 88's ownertrust work -- so only `gpgme_signers_clear` is
+    // new here. A duplicate key in this object literal is a lint error, and it
+    // was my first version's mistake.
+    gpgme_signers_clear: libgpgme.declare(
+      "gpgme_signers_clear",
+      abi,
+      ctypes.void_t,
       gpgme_ctx_t
     ),
 
