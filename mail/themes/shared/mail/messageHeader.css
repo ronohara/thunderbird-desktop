@@ -599,13 +599,27 @@ html|header.message-security-header {
   }
 }
 
-/* The provenance mark beside the panel heading. Fixed 16px for the same reason
+/* The provenance mark beside the panel heading. Fixed at 20px for the same reason
    the header badge is: it sits on the same line as the heading's own text, and
-   a flex header would otherwise stretch it. */
+   a flex header would otherwise stretch it.
+
+   Twenty rather than sixteen because Item 82 measured the drawing at the size it
+   is displayed: at 16px no row of the mark carries a gap between the wing's
+   feathers, so it reads as a solid leaf, and one gap returns at 20px. The same
+   size is set for the header's badge below, so the two surfaces agree. */
 .security-tech-mark {
-  inline-size: 16px;
-  block-size: 16px;
+  inline-size: 20px;
+  block-size: 20px;
   margin-inline-end: 3px;
+  flex: none;
+}
+
+/* The badge in the message header, sized explicitly rather than by the SVG's own
+   16px attributes -- see `.security-tech-mark` above for why 20. No margin here:
+   `.crypto-button` already spaces its children with `gap`. */
+#gnupgWingIcon {
+  inline-size: 20px;
+  block-size: 20px;
   flex: none;
 }
 

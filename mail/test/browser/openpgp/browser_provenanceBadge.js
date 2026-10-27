@@ -185,9 +185,15 @@ add_task(async function theWingAndTheLabelFollowTheEngine() {
   // The size the design asks for, measured in the real header rather than
   // inferred from the file's own attributes: a stretched flex item would still
   // "show the wing" while being the wrong size.
+  //
+  // 20 rather than 16, decided 2026-10-27. Item 82 measured the drawing at the
+  // size it is displayed and found that at 16px no row of it carries a gap
+  // between the wing's feathers -- it reads as a solid leaf -- while one gap
+  // returns at 20px. The assertion stays an exact size on both dimensions; what
+  // moved is the value, because the design decision moved.
   const rect = mark.getBoundingClientRect();
-  Assert.equal(Math.round(rect.width), 16, "the mark is 16px wide");
-  Assert.equal(Math.round(rect.height), 16, "and 16px tall");
+  Assert.equal(Math.round(rect.width), 20, "the mark is 20px wide");
+  Assert.equal(Math.round(rect.height), 20, "and 20px tall");
 
   // The label is localized, so it arrives asynchronously.
   await waitFor(() => label.textContent == "GnuPG", "the label to say GnuPG");

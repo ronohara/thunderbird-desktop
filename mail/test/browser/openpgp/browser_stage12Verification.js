@@ -233,6 +233,10 @@ add_task(async function threeBadgeStates() {
 
   // The mark at the size the header actually uses, measured in the header
   // rather than read from the file's own attributes.
+  //
+  // 20px since 2026-10-27: this item measured the drawing at 16px and found no
+  // row of it carrying a feather gap, which is what makes it read as a leaf
+  // rather than a wing; one gap returns at 20px. The assertion remains exact.
   const wing = aboutMessage.document.getElementById("gnupgWingIcon");
   await TestUtils.waitForCondition(
     () => wing.complete && wing.naturalWidth > 0,
@@ -240,8 +244,8 @@ add_task(async function threeBadgeStates() {
   );
   const rect = wing.getBoundingClientRect();
   info(`FINDING the mark occupies ${rect.width}x${rect.height}px`);
-  Assert.equal(Math.round(rect.width), 16, "the mark renders at 16px");
-  Assert.equal(Math.round(rect.height), 16, "and is square");
+  Assert.equal(Math.round(rect.width), 20, "the mark renders at 20px");
+  Assert.equal(Math.round(rect.height), 20, "and is square");
 
   await removeMessage();
 });
