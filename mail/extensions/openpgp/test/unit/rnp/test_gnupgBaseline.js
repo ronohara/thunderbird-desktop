@@ -12,13 +12,29 @@
  *
  * **What this file does and does not establish, and the difference is the
  * point.** It runs every path against the gpg that is installed on the build
- * machine, records that version, and asserts the baseline is met. What it
- * cannot do is run against a 2.3 binary specifically: no released GnuPG
- * generates v5 keys, the distro ships 2.4.4 only, and building 2.3 from source
- * needs five `-dev` packages installed system-wide -- a machine change, not a
- * test. So a run at 2.4.4 proves the paths work at a version *newer* than the
- * baseline; it does not prove they work at 2.3 itself. The version is printed
- * rather than assumed, so a run against 2.3 elsewhere would be self-evident.
+ * machine, records that version, and asserts the baseline is met.
+ *
+ * **Run against 2.3.8 on 2026-10-27, so the sentence this comment used to make
+ * is now wrong and is corrected rather than left.** It said a 2.3 run was
+ * impossible here: no released GnuPG generates v5 keys, the distro ships 2.4.4
+ * only, and building 2.3 needs several `-dev` packages installed system-wide.
+ * The last part is true and it is not an obstacle -- it is a one-off build, not
+ * a per-run cost. 2.3.8 was built from source in a throwaway VM and this file
+ * ran there: 27/27, with the same v5 import and the same 64-hex fingerprint
+ * 2.4.4 gives. So the baseline is measured at the version it declares, not only
+ * above it.
+ *
+ * **Pin the engine with `mail.openpgp.alternative_gpg_path` when doing that,
+ * and do not rely on `PATH`.** Two different callers are involved: the version
+ * probe below runs `gpg` from `PATH`, while every crypto operation goes through
+ * libgpgme, which resolves its engine separately. Prefixing `PATH` makes the
+ * probe report 2.3 while libgpgme may still use the distro's 2.4 -- a run that
+ * reads as a 2.3 measurement and is not one. The pref is the explicit route,
+ * and it can be proved honoured: pointed at a path that does not exist, the
+ * suite fails at `GPGME.signDetached`.
+ *
+ * The version is still printed on every run, so a run against another version
+ * remains self-evident.
  */
 
 "use strict";

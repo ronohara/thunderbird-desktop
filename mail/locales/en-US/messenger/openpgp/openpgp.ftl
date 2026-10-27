@@ -380,7 +380,17 @@ openpgp-key-man-add-pqc =
     .label = Generate PQC Encryption Subkey
     .accesskey = G
 # Do not translate: PQC
-openpgp-pqc-confirm-generate = Generate an encryption subkey using post-quantum cryptography (PQC)? Generation may take several minutes.
+# Item 76a: the interoperability cost, which the plain "may take several minutes"
+# warning did not state. Measured 2026-10-27 rather than assumed: gpg 2.4.4 and
+# 2.3.8 both report "Pubkey: RSA, ELG, DSA, ECDH, ECDSA, EDDSA" -- no PQC
+# algorithm at all. They import a key carrying a PQC subkey and can still send to
+# it, because they skip the subkey and use the older one; but they cannot read a
+# message encrypted TO the PQC subkey (it arrives as algorithm 35, which they do
+# not implement, and the secret subkey does not even import). GnuPG gained PQC in
+# 2.5, so 2.4 and earlier is the whole affected range, and this build does encrypt
+# to the PQC subkey when it is the newest. Keeping the version number: it is what
+# makes the warning actionable, and it is one string to update if that changes.
+openpgp-pqc-confirm-generate = Generate an encryption subkey using post-quantum cryptography (PQC)? Generation may take several minutes. Only software that supports PQC can use this subkey: GnuPG 2.4 and earlier will skip it when sending to you, but cannot read anything encrypted to it.
 openpgp-pqc-generate-failed = The PQC encryption subkey could not be generated.
 openpgp-key-man-ignored-ids =
     .label = Email addresses

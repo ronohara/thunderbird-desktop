@@ -46,6 +46,12 @@ run-if = [
   "os != 'linux'",
 ] # See bug 1806870.
 
+["browser_pqcWarning.js"]
+prefs = [
+  "mail.openpgp.use_rnp_experimental=true",
+] # Item 76a: the PQC subkey policy needs the experimental library, and the
+  # pref is read once at RNPLib load, so it has to be set before startup.
+
 ["browser_keyserverSearch.js"]
 
 ["browser_openPGPDrafts.js"]
