@@ -7,10 +7,20 @@
 }
 
 #rightBox {
-  background-size: 333px auto;
+  /* The shared panel reserves 38px above the wordmark for the image; this
+     variant's wordmark is stock's, which is 50 units tall against nightly's
+     48, so the same reservation is right. Pinned rather than inherited so a
+     later change to the shared rule cannot silently crop the wordmark. */
+  background-size: 261px auto;
 }
 
 #codenameLogo {
+  /* Hidden in this variant. The badge names Thunderbird's annual release
+     codename ("Meadow" for 160), which is upstream's release identity rather
+     than this build's, so it is not shown here. Hidden rather than removed
+     from aboutDialog.xhtml because that file is shared by every branding, and
+     the other four should keep it. */
+  display: none;
   block-size: 29px;
   inline-size: 113px;
   margin-block-start: 12px;
