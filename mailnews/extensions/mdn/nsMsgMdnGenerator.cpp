@@ -576,8 +576,16 @@ nsresult nsMsgMdnGenerator::CreateSecondPart() {
               "chrome://branding/locale/brand.properties",
               getter_AddRefs(brandBundle));
           if (NS_SUCCEEDED(rv)) {
+            // The name that goes on the wire. `emailUserAgent` lets a variant
+            // brand itself without identifying itself in every message it
+            // sends; a branding that does not define it gets the old
+            // behaviour, because a missing key fails and we fall back to
+            // `brandFullName`.
             nsString brandName;
-            brandBundle->GetStringFromName("brandFullName", brandName);
+            rv = brandBundle->GetStringFromName("emailUserAgent", brandName);
+            if (NS_FAILED(rv) || brandName.IsEmpty()) {
+              rv = brandBundle->GetStringFromName("brandFullName", brandName);
+            }
             if (!brandName.IsEmpty()) {
               NS_ConvertUTF16toUTF8 ua8(brandName);
               tmpBuffer = PR_smprintf("Reporting-UA: %s" CRLF, ua8.get());

@@ -266,9 +266,14 @@ async function testOtherHeadersAgentParam(sendAgent, minimalAgent) {
   let expectedAgent = undefined; // !sendAgent
   if (sendAgent) {
     if (minimalAgent) {
-      expectedAgent = Services.strings
-        .createBundle("chrome://branding/locale/brand.properties")
-        .GetStringFromName("brandFullName");
+      // Deliberately NOT read from branding.
+      //
+      // This used to be `GetStringFromName("brandFullName")`, which made the
+      // assertion agree with whatever the branding said and therefore unable
+      // to fail on the one thing worth checking: that a variant build does not
+      // name itself in outgoing mail. The literal is what stock Thunderbird
+      // sends, so any branding that changes it is caught here.
+      expectedAgent = "Mozilla Thunderbird";
     } else {
       expectedAgent = Cc[
         "@mozilla.org/network/protocol;1?name=http"

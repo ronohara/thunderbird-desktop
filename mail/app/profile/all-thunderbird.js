@@ -172,7 +172,11 @@ pref("toolkit.datacollection.infoURL",
 pref("toolkit.crashreporter.infoURL",
      "https://www.mozilla.org/thunderbird/legal/privacy/#crash-reporter");
 
-pref("datareporting.healthreport.uploadEnabled", true); // Required to enable telemetry pings.
+// COLDFORK-NO-NET: default off. Telemetry submission is neutered in code as
+// well (see toolkit/components/telemetry TelemetrySend), so this is the
+// user-visible statement rather than the only barrier: the Preferences
+// checkbox starts unticked, and turning it on changes nothing.
+pref("datareporting.healthreport.uploadEnabled", false);
 pref("datareporting.healthreport.infoURL", "https://www.mozilla.org/thunderbird/legal/privacy/#health-report");
 
 #ifdef MOZ_DATA_REPORTING

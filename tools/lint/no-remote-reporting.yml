@@ -1,0 +1,16 @@
+---
+no-remote-reporting:
+    description: >-
+        Fail if a remote-reporting send path (telemetry, crash reports, update
+        checks) has been restored by a vendoring or an upstream merge.
+    # Any comm change is enough to run this. The guards it checks live outside
+    # comm, so a change to them does not trigger it here -- that is what the
+    # standalone script and the `mach vendor` hook are for. A whole-tree
+    # `mach lint` (what CI runs) always includes it.
+    include:
+        - comm/
+    support-files:
+        - 'comm/tools/lint/commlint/no_remote_reporting.py'
+        - 'comm/tools/verify-no-remote-reporting.sh'
+    type: global
+    payload: commlint.no_remote_reporting:lint

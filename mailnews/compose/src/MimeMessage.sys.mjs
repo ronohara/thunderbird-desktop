@@ -206,12 +206,20 @@ export class MimeMessage {
 
     if (Services.prefs.getBoolPref("mailnews.headers.sendUserAgent")) {
       if (Services.prefs.getBoolPref("mailnews.headers.useMinimalUserAgent")) {
-        headers.set(
-          "user-agent",
-          Services.strings
-            .createBundle("chrome://branding/locale/brand.properties")
-            .GetStringFromName("brandFullName")
+        // The name that goes on the wire. `emailUserAgent` exists so a variant
+        // can brand itself freely without identifying itself in every message
+        // it sends; brandings that do not define it fall back to
+        // `brandFullName`, so nothing changes for them.
+        const brandBundle = Services.strings.createBundle(
+          "chrome://branding/locale/brand.properties"
         );
+        let agentName;
+        try {
+          agentName = brandBundle.GetStringFromName("emailUserAgent");
+        } catch (ex) {
+          agentName = brandBundle.GetStringFromName("brandFullName");
+        }
+        headers.set("user-agent", agentName);
       } else {
         headers.set(
           "user-agent",
