@@ -444,6 +444,23 @@
         </tree>
       </hbox>
 
+      <!-- Shown when the keyring could not be read at all, so that an empty
+           list is not mistaken for an empty keyring. The dialog is silent about
+           this otherwise: loadAllGnuPgKeys() returns false and the list is
+           simply short, which reads as "you have no keys". -->
+      <hbox id="gnupgUnavailableNotice"
+            class="inline-notification-container info-container"
+            collapsed="collapsed">
+        <hbox class="inline-notification-wrapper">
+          <html:img class="notification-image"
+                    src="chrome://global/skin/icons/warning.svg"
+                    alt="" />
+          <vbox flex="1">
+            <description id="gnupgUnavailableNoticeDescription"/>
+          </vbox>
+        </hbox>
+      </hbox>
+
       <hbox id="statusLine">
         <label id="statusText" value="" />
         <html:progress id="progressBar" style="visibility: collapsed" />

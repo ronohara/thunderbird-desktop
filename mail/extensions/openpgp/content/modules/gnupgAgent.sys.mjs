@@ -26,6 +26,86 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 export var GnuPGAgent = {
   /**
+   * Places a gpg installed by a package manager lands on macOS, in the order
+   * they are checked.
+   *
+   * A Finder-launched application does not inherit the user's shell PATH. The
+   * measured value for this build's own process was `/usr/bin:/bin:/usr/sbin:
+   * /sbin`, so `pathSearch("gpg")` cannot see a Homebrew install at
+   * `/opt/homebrew/bin/gpg` even though the same command works in Terminal.
+   *
+   * This is the executable's counterpart to `GPGMELib`'s ADDITIONAL_LIB_PATHS,
+   * which has always looked in /usr/local/lib, /opt/local/lib and
+   * /opt/homebrew/lib for the library. Nothing did the equivalent for the
+   * binary, which is why a machine could load gpgme and still have no gpg.
+   */
+  GPG_SEARCH_PATHS: [
+    "/opt/homebrew/bin", // Homebrew on Apple silicon
+    "/usr/local/bin", // Homebrew on Intel, and the conventional install
+    "/opt/local/bin", // MacPorts
+    "/usr/bin", // what would already be on PATH
+  ],
+
+  /**
+   * Resolve a gpg helper to a path this process can execute.
+   *
+   * Three answers, in the order that reflects who owns the decision: the
+   * configured override, then PATH, then the well-known package-manager
+   * locations above. `GPGMELib` honours `mail.openpgp.alternative_gpg_path`
+   * when it points gpgme at an engine, so the agent honouring the same pref
+   * keeps the two processes talking about the same binary rather than two.
+   *
+   * @param {string} command - Executable name, usually "gpg" or "gpgconf".
+   * @returns {Promise<?string>} A path, or null when nothing was found.
+   */
+  async resolveCommand(command) {
+    const pinned = Services.prefs.getStringPref(
+      "mail.openpgp.alternative_gpg_path",
+      ""
+    );
+    if (pinned && command === "gpg") {
+      // The pref names gpg and nothing else. Applying it to gpgconf would be a
+      // guess about a path that was never given.
+      try {
+        const file = Cc["@mozilla.org/file/local;1"].createInstance(
+          Ci.nsIFile
+        );
+        file.initWithPath(pinned);
+        if (file.exists() && file.isExecutable()) {
+          return pinned;
+        }
+      } catch (ex) {
+        // A malformed pref falls through to the search rather than failing the
+        // operation: the user's intent was a working gpg, and PATH is where
+        // they would expect it to be found next.
+      }
+    }
+
+    try {
+      return await lazy.Subprocess.pathSearch(command);
+    } catch (ex) {
+      // Not on PATH. That is the normal case for a Finder-launched app, not an
+      // error worth returning early for.
+    }
+
+    for (const dir of this.GPG_SEARCH_PATHS) {
+      const candidate = `${dir}/${command}`;
+      try {
+        const file = Cc["@mozilla.org/file/local;1"].createInstance(
+          Ci.nsIFile
+        );
+        file.initWithPath(candidate);
+        if (file.exists() && file.isExecutable()) {
+          return candidate;
+        }
+      } catch (ex) {
+        // An unreadable or absent path is simply not a candidate.
+      }
+    }
+
+    return null;
+  },
+  /**
    * Run one gpg helper and return { ok, output }.
    *
    * Both streams must be piped explicitly, and both must be read the way
@@ -44,10 +124,8 @@ export var GnuPGAgent = {
    * @returns {Promise<object>} { ok, output } where output is stdout+stderr.
    */
   async _run(command, args, stdin) {
-    let path;
-    try {
-      path = await lazy.Subprocess.pathSearch(command);
-    } catch (ex) {
+    const path = await this.resolveCommand(command);
+    if (!path) {
       return { ok: false, output: `${command} not found` };
     }
 

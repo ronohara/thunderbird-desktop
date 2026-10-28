@@ -35,6 +35,9 @@ var { PgpSqliteDb2 } = ChromeUtils.importESModule(
 var { EnigmailKeyRing } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/keyRing.sys.mjs"
 );
+var { GPGME } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/GPGME.sys.mjs"
+);
 var { EnigmailKey } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/key.sys.mjs"
 );
@@ -201,6 +204,8 @@ async function buildKeyList(refresh) {
     getSortDirection()
   );
 
+  updateGnuPgUnavailableNotice();
+
   if (!keyListObj.keySortList) {
     return;
   }
@@ -209,6 +214,51 @@ async function buildKeyList(refresh) {
   gKeySortList = keyListObj.keySortList;
 
   gKeyListView.keysRefreshed();
+}
+
+/**
+ * Say so when the GnuPG keyring could not be read, instead of showing a list
+ * that is merely short.
+ *
+ * `loadAllGnuPgKeys()` returns false for three different situations -- the
+ * external path switched off, the address-keyed discovery switched off, and
+ * gpgme failing to load -- and `getManagerKeyList()` ignores the answer, so a
+ * keyring that could not be read produces exactly the same screen as a keyring
+ * with no keys in it. A user whose whole keyring is in GnuPG therefore opens
+ * this dialog on a blank list and is told nothing.
+ *
+ * Only the third case is reported. The two preferences are the user's own
+ * configuration and the dialog already offers ways to change them; a library
+ * that will not load is not something the user chose, and it cannot be fixed
+ * from inside this window.
+ *
+ * The wording differs from the Account Settings notice deliberately. There the
+ * question is "can this be made to work", and the answer includes a package to
+ * install; here the user is looking at what they believe is their keyring, and
+ * what they need to know first is that the list is wrong.
+ */
+function updateGnuPgUnavailableNotice() {
+  const notice = document.getElementById("gnupgUnavailableNotice");
+  const description = document.getElementById(
+    "gnupgUnavailableNoticeDescription"
+  );
+  if (!notice || !description) {
+    return;
+  }
+
+  const externalPathOn = Services.prefs.getBoolPref(
+    "mail.openpgp.allow_external_gnupg"
+  );
+
+  // With the external path off there is no keyring to read, and an empty list
+  // is the correct report: the internal store really is what is being shown.
+  if (!externalPathOn || GPGME.init()) {
+    notice.collapsed = true;
+    return;
+  }
+
+  notice.collapsed = false;
+  document.l10n.setAttributes(description, "openpgp-key-man-gnupg-unavailable");
 }
 
 function getSelectedKeys() {

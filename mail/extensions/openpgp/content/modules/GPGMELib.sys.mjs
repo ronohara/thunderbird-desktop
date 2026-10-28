@@ -87,6 +87,23 @@ function loadExternalGPGMELib() {
   libsToTry.push(["libgpgme6-11", ""]);
   libsToTry.push(["libgpgme-11", ""]);
 
+  // The two names above are Debian's sonames. Homebrew and MacPorts ship the
+  // upstream names instead -- libgpgme.dylib and libgpgme.45.dylib as
+  // installed by gpgme 2.2.0 on 2026-10-28 -- so a macOS user who did exactly
+  // what the prerequisite notice asked (brew install gpgme) still could not
+  // load the library, and the notice went on saying it was missing. Measured
+  // with dlopen: libgpgme6-11.dylib and libgpgme-11.dylib both fail on a stock
+  // Homebrew install, while libgpgme.dylib and libgpgme.45.dylib both load.
+  //
+  // Tried after the Debian names so an existing Linux layout is unchanged, and
+  // only on non-Windows, where libgpgme6-11/-11 are the only spellings that
+  // exist.
+  if (Services.appinfo.OS !== "WINNT") {
+    libsToTry.push(["libgpgme", ""]);
+    libsToTry.push(["libgpgme", ".45"]);
+    libsToTry.push(["libgpgme", ".11"]);
+  }
+
   if (Services.appinfo.OS === "WINNT") {
     if (optionalGPGMEVersion) {
       libsToTry.push(["libgpgme-" + optionalGPGMEVersion, ""]);

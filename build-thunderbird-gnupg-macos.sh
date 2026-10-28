@@ -167,7 +167,31 @@ info "cores:      $CORES"
 # it over the clock and rejects anything that is not 14 digits. One value here
 # reaches every pass, so buildid.h, buildid.cpp and application.ini are the same
 # number for the life of the run.
-export MOZ_BUILD_DATE="${MOZ_BUILD_DATE:-$(date +%Y%m%d%H%M%S)}"
+#
+# On a rebuild the existing value is reused rather than a new one minted, and
+# that is the part that makes an incremental build honest. buildid.cpp is a
+# GeneratedFile whose inputs are the objects linked into XUL, so it is rebuilt
+# on a relink and *not* when buildid.h changes: a new date would therefore land
+# in application.ini while the binary kept the old one. Measured 2026-10-28 --
+# with a new date pinned, buildid.h read 20261028130758 while XUL still carried
+# 20261028113028 from the build before. Reusing the value that is already
+# linked in means nothing has to relink and the two cannot disagree. A new
+# value is minted only when there is no previous build to agree with.
+if [ -z "${MOZ_BUILD_DATE:-}" ]; then
+  PREVIOUS_BUILD_DATE=""
+  # A glob that matches nothing stays a literal on some shells, and `cat` on it
+  # fails -- which under `set -e -o pipefail` would end the run before it began.
+  # The loop form skips a non-existent match instead.
+  for previous_header in "$SRC"/obj-*/buildid.h; do
+    [ -e "$previous_header" ] || continue
+    PREVIOUS_BUILD_DATE="$(grep -oE '[0-9]{14}' "$previous_header" 2>/dev/null | head -1 || true)"
+  done
+  MOZ_BUILD_DATE="${PREVIOUS_BUILD_DATE:-$(date +%Y%m%d%H%M%S)}"
+  if [ -n "$PREVIOUS_BUILD_DATE" ]; then
+    info "build id:   reusing the date already linked into this objdir"
+  fi
+fi
+export MOZ_BUILD_DATE
 info "build id:   $MOZ_BUILD_DATE (pinned for the whole run)"
 
 FREE_GB="$(df -g "$SRC" 2>/dev/null | awk 'NR==2 {print $4}')"

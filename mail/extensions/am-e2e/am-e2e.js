@@ -42,6 +42,9 @@ var { GPGME } = ChromeUtils.importESModule(
 var { Subprocess } = ChromeUtils.importESModule(
   "resource://gre/modules/Subprocess.sys.mjs"
 );
+var { GnuPGAgent } = ChromeUtils.importESModule(
+  "chrome://openpgp/content/modules/gnupgAgent.sys.mjs"
+);
 
 var email_signing_cert_usage = 4; // SECCertUsage.certUsageEmailSigner
 var email_recipient_cert_usage = 5; // SECCertUsage.certUsageEmailRecipient
@@ -668,31 +671,53 @@ function updateDuplicateKeyNotice() {
  * @returns {Promise<?string>} The path to gpg, or null if it cannot be found.
  */
 async function findGpgExecutable() {
+  // The same three answers GnuPGAgent.resolveCommand gives, in the same order,
+  // so that this notice cannot disagree with the engine it is reporting on.
+  //
+  // The well-known paths are the part that matters on macOS: a Finder-launched
+  // application does not inherit the shell PATH, and the measured PATH for this
+  // build's own process was /usr/bin:/bin:/usr/sbin:/sbin -- which cannot see a
+  // Homebrew gpg at /opt/homebrew/bin/gpg even though `gpg --version` works in
+  // Terminal. Before this, the notice said gpg was missing to a user who had
+  // just installed it.
   const pinned = Services.prefs.getStringPref(
     "mail.openpgp.alternative_gpg_path",
     ""
   );
 
-  if (pinned) {
-    // A configured path is the engine's answer by definition, so this is a
-    // file question rather than a PATH question.
+  const exists = candidate => {
     try {
       const file = Cc["@mozilla.org/file/local;1"].createInstance(
         Ci.nsIFile
       );
-      file.initWithPath(pinned);
-      return file.exists() ? pinned : null;
+      file.initWithPath(candidate);
+      return file.exists() && file.isExecutable();
     } catch (ex) {
-      console.warn("Checking the configured gpg path failed", ex);
-      return null;
+      return false;
     }
+  };
+
+  if (pinned && exists(pinned)) {
+    // A configured path is the engine's answer by definition, so this is a
+    // file question rather than a PATH question.
+    return pinned;
   }
 
   try {
+    // pathSearch throws when the command is absent, which is an answer here.
     return await Subprocess.pathSearch("gpg");
   } catch (ex) {
-    return null;
+    // Fall through to the package-manager locations.
   }
+
+  for (const dir of GnuPGAgent.GPG_SEARCH_PATHS) {
+    const candidate = `${dir}/gpg`;
+    if (exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**

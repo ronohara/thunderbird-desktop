@@ -434,6 +434,11 @@ openpgp-key-man-nothing-found-tooltip =
 openpgp-key-man-please-wait-tooltip =
     .label = Please wait while keys are being loaded…
 
+# Shown in the Key Manager when the GnuPG keyring cannot be read, so that an
+# empty list is not read as an empty keyring. Without it the dialog is silent:
+# loadAllGnuPgKeys() returns false and the list is simply short.
+openpgp-key-man-gnupg-unavailable = Your GnuPG keyring could not be read, so this list is incomplete — it shows only the keys stored inside { -brand-short-name }. Keys in GnuPG are not missing; they cannot be seen. The cause is reported in Account Settings, under End-to-End Encryption.
+
 openpgp-key-man-filter-label =
     .placeholder = Search for keys
 
