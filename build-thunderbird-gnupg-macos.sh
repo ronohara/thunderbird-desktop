@@ -375,6 +375,29 @@ sed 's/^/      /' "$MOZCONFIG"
 # ---------------------------------------------------------------- phase 3
 say "Phase 3 - build (full, non-artifact)"
 
+# Keep the build tree out of Spotlight, so the Applications panel shows one
+# Thunderbird rather than every copy this tree contains.
+#
+# `mach package` writes two complete app bundles into the objdir -- dist/ for
+# `mach run` and dist/thunderbird-gnupg/ for the .dmg -- and each carries six
+# nested helper apps, two of which present themselves as "Thunderbird GnuPG
+# Crash Reporter" and "Thunderbird GnuPG Software Update". Spotlight indexes
+# all of them under ~/Documents, so a search for Thunderbird returns a row of
+# identical icons with no way to tell which one is the installed build.
+#
+# The marker makes the metadata importer skip this directory, so nothing the
+# build creates is ever indexed and the only Thunderbird in a search is the
+# installed one. It has to be written on every run because it lives inside the
+# objdir, which a clobber deletes. Verified 2026-10-28: with the marker in
+# place, mdls on a freshly packaged bundle under this tree returns null for its
+# display name while the installed copy still reports "Thunderbird GnuPG".
+for objdir_marker in "$SRC"/obj-*; do
+  [ -d "$objdir_marker" ] || continue
+  if [ ! -e "$objdir_marker/.metadata_never_index" ]; then
+    : > "$objdir_marker/.metadata_never_index" && info "kept $(basename "$objdir_marker") out of Spotlight"
+  fi
+done
+
 mkdir -p "$LOG_DIR"
 [ -f "$LOG" ] || : > "$LOG"
 info "this takes a long time (tens of minutes, longer on a first run)"
