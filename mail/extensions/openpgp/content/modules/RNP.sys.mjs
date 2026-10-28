@@ -4848,29 +4848,59 @@ export var RNP = {
     }
 
     if (args.encryptToSender && args.sender) {
-      const senderEmail = this.getEmailWithoutBrackets(
-        args.sender.toLowerCase()
-      );
       let added = false;
-      if (senderEmail.includes("@")) {
-        const fromGnuPG = lazy.GPGME.getPublicKeysForEmail(senderEmail);
-        for (const [gpgFpr, block] of fromGnuPG) {
-          addFingerprint(gpgFpr, block);
-          added = true;
-        }
-      }
-      if (!added) {
-        const senderKey = await this.getKeyHandleByIdentifier(
-          RNPLib.ffi,
-          args.sender
+
+      // The identity names its key by id, not by address: `getSenderUserId()`
+      // returns "0x" + keyId so that error messages name the configured key.
+      // An id has to be resolved through the same lookup the recipients use,
+      // which asks GnuPG first -- on this path the key normally lives there,
+      // and the RNP store is empty by design.
+      //
+      // This used to go straight to `getKeyHandleByIdentifier()`, which for an
+      // id is the RNP store only. With no key in the profile ring the lookup
+      // returned nothing, the sender was silently left out of the recipient
+      // list, and the copy saved to Sent was encrypted to the correspondents
+      // alone -- readable by them and by nobody else. A draft has no other
+      // recipient, so there the same omission produced no recipients at all
+      // and the save failed outright.
+      if (/^0x[0-9a-f]+$/i.test(args.sender)) {
+        added = addKeyId(args.sender);
+      } else {
+        const senderEmail = this.getEmailWithoutBrackets(
+          args.sender.toLowerCase()
         );
-        if (senderKey && !senderKey.isNull()) {
-          const fpr = this.getFingerprintFromHandle(senderKey);
-          RNPLib.rnp_key_handle_destroy(senderKey);
-          if (fpr) {
-            addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+        if (senderEmail.includes("@")) {
+          const fromGnuPG = lazy.GPGME.getPublicKeysForEmail(senderEmail);
+          for (const [gpgFpr, block] of fromGnuPG) {
+            addFingerprint(gpgFpr, block);
+            added = true;
           }
         }
+        if (!added) {
+          const senderKey = await this.getKeyHandleByIdentifier(
+            RNPLib.ffi,
+            args.sender
+          );
+          if (senderKey && !senderKey.isNull()) {
+            const fpr = this.getFingerprintFromHandle(senderKey);
+            RNPLib.rnp_key_handle_destroy(senderKey);
+            if (fpr) {
+              addFingerprint(fpr, this.exportPublicKeyBlock(fpr));
+              added = true;
+            }
+          }
+        }
+      }
+
+      if (!added) {
+        // Never silent. A message the sender cannot read back is not the
+        // message they asked to send, so the caller turns this into a refusal
+        // rather than encrypting to everybody except its author.
+        args.senderKeyUnavailable = true;
+        lazy.log.warn(
+          `Cannot encrypt to the sender's own key ${args.sender}: no usable ` +
+            `key was found in GnuPG or in the profile.`
+        );
       }
     }
 
@@ -4930,6 +4960,28 @@ export var RNP = {
       // "FAILED: undefined".
       resultStatus.exitCode = -1;
       resultStatus.errorMsg = "Could not find a usable key for every recipient";
+      return null;
+    }
+
+    if (args.senderKeyUnavailable) {
+      // Encrypting to everyone except the author produces a message the author
+      // cannot read back, and the Sent copy is the only record of what was
+      // sent. Refused, with the reason, rather than sent and discovered later.
+      // The draft path reaches this too -- there the author is the only
+      // recipient, so a silent omission left the save with no recipients at
+      // all and it failed with a message that named nothing.
+      resultStatus.statusFlags |= lazy.EnigmailConstants.INVALID_RECIPIENT;
+      resultStatus.exitCode = -1;
+      // `formatValue`, not `formatValueSync`: this function is async, and the
+      // synchronous form throws "Can't use formatValueSync when state is async"
+      // rather than returning a message. The same mistake was made once before
+      // in this file, recorded against Item 36's row.
+      resultStatus.errorMsg = await l10n.formatValue(
+        "cannot-encrypt-to-own-key",
+        {
+          key: args.sender,
+        }
+      );
       return null;
     }
 

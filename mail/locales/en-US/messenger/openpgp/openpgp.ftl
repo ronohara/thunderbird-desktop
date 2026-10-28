@@ -1121,6 +1121,13 @@ cannot-send-sig-because-no-own-key = Cannot digitally sign this message, because
 # $key (String) - Sender email address.
 cannot-send-enc-because-no-own-key = Cannot send this message encrypted, because you haven’t yet configured end-to-end encryption for <{ $key }>
 
+# Shown when the sender's own key cannot be used, so no copy could be encrypted
+# for them. Without that copy the message cannot be read back from Sent, so the
+# send or draft save is refused rather than completed unreadably.
+# Variables:
+# $key (String) - The key the identity names, as an id or address.
+cannot-encrypt-to-own-key = Cannot send or save this message, because your own key { $key } could not be used to encrypt a copy for you. Without that copy you would be unable to read the message you sent.
+
 ## Strings used in decryption.sys.mjs
 
 # Variables:

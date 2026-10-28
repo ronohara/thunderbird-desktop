@@ -40,6 +40,9 @@ run-sequentially = true  # writes the profile-global acceptance store
 ["test_externalGnuPGSigning.js"]
 skip-if = ["os != 'linux'"]
 
+["test_encryptToSender.js"]
+run-sequentially = true  # imports a secret key into a temporary GnuPG home
+
 ["test_externalGnuPGPinentry.js"]
 skip-if = ["os != 'linux'"]
 
