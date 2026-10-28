@@ -880,12 +880,17 @@ const ALICE_PUB = "data/keys/alice@openpgp.example-0xf231550c4f47e38e-pub.asc";
 function readNotices() {
   const internal = tabDocument.getElementById("openPgpInternalKeyNotice");
   const duplicate = tabDocument.getElementById("openPgpDuplicateKeyNotice");
+  const prerequisite = tabDocument.getElementById(
+    "openPgpGnuPgPrerequisiteNotice"
+  );
   const id = name => tabDocument.getElementById(name)?.dataset.l10nId || null;
   return {
     internalShown: !internal.collapsed,
     internalMessage: id("openPgpInternalKeyNoticeDescription"),
     duplicateShown: !duplicate.collapsed,
     duplicateMessage: id("openPgpDuplicateKeyNoticeDescription"),
+    prerequisiteShown: !prerequisite.collapsed,
+    prerequisiteMessage: id("openPgpGnuPgPrerequisiteNoticeDescription"),
   };
 }
 
@@ -1038,6 +1043,171 @@ add_task(async function state3_no_copy_says_nothing() {
     restoreGnuPG();
     await SpecialPowers.popPrefEnv();
   }
+});
+
+/**
+ * The prerequisite notice reports a missing libgpgme, and installs nothing.
+ *
+ * This is the state the build was in on the machine that found the gap: the
+ * pref on, `GPGME.init()` false, and every call site returning early so that
+ * signing and encryption silently did nothing. Nothing in the interface said
+ * so.
+ *
+ * `GPGME.init` is stubbed rather than broken, because the library loads once
+ * per process and cannot be unloaded. What this proves is the notice's choice
+ * of message and the state it puts on screen; the real detection is not
+ * something a headless run can force.
+ */
+add_task(async function prerequisite_notice_reports_missing_libgpgme() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ readable: false });
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    const notices = readNotices();
+
+    Assert.equal(
+      notices.prerequisiteShown,
+      true,
+      "a missing libgpgme is reported rather than passing in silence"
+    );
+    Assert.equal(
+      notices.prerequisiteMessage,
+      "openpgp-gnupg-prerequisite-gpgme",
+      "and the message names the library, not the gpg executable"
+    );
+  } finally {
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * When the library loads but gpg cannot be found, the message names gpg.
+ *
+ * Two different remedies, so two different messages: a user who installed the
+ * library and was told to install the library again would rightly conclude the
+ * notice was not worth reading.
+ */
+add_task(async function prerequisite_notice_names_the_gpg_executable() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ readable: true });
+  const original = tabWindow.findGpgExecutable;
+  tabWindow.findGpgExecutable = async () => null;
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    const notices = readNotices();
+
+    Assert.equal(
+      notices.prerequisiteShown,
+      true,
+      "the missing executable is reported"
+    );
+    Assert.equal(
+      notices.prerequisiteMessage,
+      "openpgp-gnupg-prerequisite-gpg",
+      "and the message names gpg rather than libgpgme"
+    );
+  } finally {
+    tabWindow.findGpgExecutable = original;
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * With both prerequisites present the notice is silent.
+ *
+ * The control for the two tasks above: without it a notice that was always
+ * shown would satisfy both of them.
+ */
+add_task(async function prerequisite_notice_is_silent_when_nothing_is_missing() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", true]],
+  });
+  stubGnuPG({ readable: true });
+  const original = tabWindow.findGpgExecutable;
+  tabWindow.findGpgExecutable = async () => "/usr/bin/gpg";
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    Assert.equal(
+      readNotices().prerequisiteShown,
+      false,
+      "nothing missing means nothing said"
+    );
+  } finally {
+    tabWindow.findGpgExecutable = original;
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * The notice obeys the master switch.
+ *
+ * With the external path switched off the internal engine is a supported way
+ * to work, so advising the user to install a library they have declined to use
+ * would be advice against their own configuration.
+ */
+add_task(async function prerequisite_notice_respects_the_master_switch() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["mail.openpgp.allow_external_gnupg", false]],
+  });
+  stubGnuPG({ readable: false });
+  try {
+    await tabWindow.reloadOpenPgpUI();
+    Assert.equal(
+      readNotices().prerequisiteShown,
+      false,
+      "a library the user has switched off is not reported as missing"
+    );
+  } finally {
+    restoreGnuPG();
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+/**
+ * The notice reports and does not act.
+ *
+ * Read from the source, because the claim is about what the function cannot do
+ * rather than about what it produced: a notice that quietly installed a
+ * package would pass every assertion above.
+ */
+add_task(async function prerequisite_notice_changes_nothing_on_the_system() {
+  const ChromeRegistry = Cc["@mozilla.org/chrome/chrome-registry;1"].getService(
+    Ci.nsIChromeRegistry
+  );
+  const file = ChromeRegistry.convertChromeURL(
+    Services.io.newURI("chrome://messenger/content/am-e2e.js")
+  ).QueryInterface(Ci.nsIFileURL).file;
+  const source = new TextDecoder().decode(await IOUtils.read(file.path));
+
+  const start = source.indexOf("async function updateGnuPgPrerequisiteNotice(");
+  Assert.greater(start, -1, "updateGnuPgPrerequisiteNotice() should exist");
+
+  const rest = source.slice(start + 1);
+  const end = rest.search(/\n(?:async )?function /);
+  const body = end < 0 ? rest : rest.slice(0, end);
+
+  for (const forbidden of ["Subprocess.call", "IOUtils.write", "brew"]) {
+    Assert.ok(
+      !body.includes(forbidden),
+      `the notice must not run anything: found ${forbidden}`
+    );
+  }
+
+  Assert.ok(
+    body.includes("allow_external_gnupg"),
+    "its first condition is the master switch"
+  );
+  Assert.ok(
+    body.includes("GPGME.init()"),
+    "and it asks whether the library loaded"
+  );
 });
 
 registerCleanupFunction(async function () {

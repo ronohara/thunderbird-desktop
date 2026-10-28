@@ -39,6 +39,9 @@ var { EnigmailCore } = ChromeUtils.importESModule(
 var { GPGME } = ChromeUtils.importESModule(
   "chrome://openpgp/content/modules/GPGME.sys.mjs"
 );
+var { Subprocess } = ChromeUtils.importESModule(
+  "resource://gre/modules/Subprocess.sys.mjs"
+);
 
 var email_signing_cert_usage = 4; // SECCertUsage.certUsageEmailSigner
 var email_recipient_cert_usage = 5; // SECCertUsage.certUsageEmailRecipient
@@ -651,6 +654,104 @@ function updateDuplicateKeyNotice() {
   );
   document.l10n.setAttributes(manage, "openpgp-duplicate-key-notice-manage");
   return duplicates;
+}
+
+/**
+ * The GnuPG executable this build will actually use, or null when there is one.
+ *
+ * Asks the question the engine asks rather than inventing a search: GnuPGAgent
+ * resolves `gpg` with `Subprocess.pathSearch()`, and
+ * `mail.openpgp.alternative_gpg_path` pins a specific binary when it is set. A
+ * check that used a different search would be able to disagree with the thing
+ * it is checking.
+ *
+ * @returns {Promise<?string>} The path to gpg, or null if it cannot be found.
+ */
+async function findGpgExecutable() {
+  const pinned = Services.prefs.getStringPref(
+    "mail.openpgp.alternative_gpg_path",
+    ""
+  );
+
+  if (pinned) {
+    // A configured path is the engine's answer by definition, so this is a
+    // file question rather than a PATH question.
+    try {
+      const file = Cc["@mozilla.org/file/local;1"].createInstance(
+        Ci.nsIFile
+      );
+      file.initWithPath(pinned);
+      return file.exists() ? pinned : null;
+    } catch (ex) {
+      console.warn("Checking the configured gpg path failed", ex);
+      return null;
+    }
+  }
+
+  try {
+    return await Subprocess.pathSearch("gpg");
+  } catch (ex) {
+    return null;
+  }
+}
+
+/**
+ * Report a missing prerequisite of the external GnuPG path, or stay silent.
+ *
+ * The build does not install anything. A library the user installs is one they
+ * can see, verify and remove, and presuming to change their system to make this
+ * application work is a larger act than saying what it needs. So this notice
+ * names the missing piece and stops.
+ *
+ * Two prerequisites, reported apart because the remedies differ: `libgpgme`,
+ * which `GPGMELib` loads with `ctypes.open()`, and the `gpg` executable, which
+ * `GnuPGAgent` looks up on PATH. A message that named only "GnuPG" would send a
+ * user with the library installed to install it twice.
+ *
+ * Nothing on the external path runs while `GPGME.init()` is false -- every call
+ * site returns early -- so before this notice a user in that state saw an engine
+ * that did nothing and explained nothing.
+ */
+async function updateGnuPgPrerequisiteNotice() {
+  const notice = document.getElementById("openPgpGnuPgPrerequisiteNotice");
+  const description = document.getElementById(
+    "openPgpGnuPgPrerequisiteNoticeDescription"
+  );
+
+  if (!notice || !description) {
+    return;
+  }
+
+  // Only while the external path is switched on. Telling a user to install a
+  // library they have deliberately declined to use would be advice against
+  // their own configuration, and with the pref off the internal engine is a
+  // supported way to work rather than a broken state.
+  if (!Services.prefs.getBoolPref("mail.openpgp.allow_external_gnupg")) {
+    notice.collapsed = true;
+    return;
+  }
+
+  // The library is checked first because nothing else can run without it, and
+  // because `GPGME.init()` records its answer for the life of the process: the
+  // loader is called once. Installing libgpgme therefore cannot take effect
+  // until a restart, so the message says that rather than offering a "check
+  // again" control that could never succeed.
+  if (!GPGME.init()) {
+    notice.collapsed = false;
+    document.l10n.setAttributes(
+      description,
+      "openpgp-gnupg-prerequisite-gpgme"
+    );
+    return;
+  }
+
+  if (!(await findGpgExecutable())) {
+    notice.collapsed = false;
+    document.l10n.setAttributes(description, "openpgp-gnupg-prerequisite-gpg");
+    return;
+  }
+
+  notice.collapsed = true;
 }
 
 /**
@@ -1716,6 +1817,7 @@ async function reloadOpenPgpUI() {
   await setOpenPgpDescription(keyCount);
   updateInternalKeyNotice();
   updateDuplicateKeyNotice();
+  await updateGnuPgPrerequisiteNotice();
 
   const radiogroup = document.getElementById("openPgpKeyListRadio");
 

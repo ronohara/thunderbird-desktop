@@ -595,6 +595,21 @@ openpgp-internal-key-notice = { $count ->
 
 openpgp-internal-key-notice-manage = Open the Key Manager
 
+# Shown in Account Settings when the external GnuPG keyring is switched on but
+# libgpgme cannot be loaded. Nothing on that path runs without it: every call
+# site returns early, so the build silently did nothing before this notice.
+#
+# The build deliberately installs nothing -- the user installs it, so they can
+# also see and remove it. The restart is stated because GPGME.init() answers
+# once for the life of the process, so a library installed while Thunderbird is
+# running cannot be picked up until it starts again.
+openpgp-gnupg-prerequisite-gpgme = The GnuPG keyring is switched on, but { -brand-short-name } cannot load libgpgme, the library it uses to reach GnuPG, so signing and encryption with keys in GnuPG will not work. Install it — for example with “brew install gpgme” — and restart { -brand-short-name }. Nothing has been installed for you.
+
+# Shown when libgpgme loads but the gpg executable cannot be found. A separate
+# message from the one above because the remedy is a different package. No
+# restart is asked for here: the executable is looked up each time it is used.
+openpgp-gnupg-prerequisite-gpg = The GnuPG keyring is switched on and libgpgme is available, but the gpg program itself was not found, so signing and encryption with keys in GnuPG will not work. Install it — for example with “brew install gnupg”. Nothing has been installed for you.
+
 # Shown when the profile holds a copy of a key that GnuPG also holds.
 #
 # Variables:
