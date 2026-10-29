@@ -52,9 +52,11 @@ HOMEPAGE="${HOMEPAGE:-https://sentuny.com}"
 
 DEST="${DEST:-$HOME}"
 
-# A complete package has thousands of entries. The floor is deliberately far
-# below that: it is there to reject a fragment, not to assert an exact count.
-MIN_PKG_ENTRIES="${MIN_PKG_ENTRIES:-1000}"
+# A complete package has 72 entries, not thousands: the chrome lives inside
+# omni.ja as a single archive member, so the count is small and stable. Measured
+# against the 21 Oct known-good package (72) and the interrupted fragment (15).
+# The floor rejects a fragment without asserting an exact count.
+MIN_PKG_ENTRIES="${MIN_PKG_ENTRIES:-50}"
 
 JOBS=""
 SKIP_BUILD=0
