@@ -1185,7 +1185,18 @@ function getSortColumn() {
 function openKeyWizard(isImport = false) {
   const args = {
     gSubDialog: null,
-    cancelCallback: clearKeyCache,
+    // Cancel creates nothing, so rebuilding the whole key list on the close
+    // path is pure cost -- measured as a substantial delay between pressing
+    // Cancel and the window disappearing. Both caches are still cleared, which
+    // is what the rebuild did first and costs nothing; what is dropped is the
+    // enumeration that followed it. A partial import is still visible on the
+    // next open, because the ring cache is among the two. The success callbacks
+    // keep clearKeyCache: those paths do add keys, and the list should be
+    // current immediately.
+    cancelCallback: () => {
+      EnigmailKeyRing.clearCache();
+      EnigmailKeyRing.clearGnuPgKeyCache();
+    },
     okCallback: clearKeyCache,
     okImportCallback: clearKeyCache,
     okExternalCallback: clearKeyCache,

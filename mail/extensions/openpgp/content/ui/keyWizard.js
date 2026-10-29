@@ -663,8 +663,12 @@ function onKeyTypeChange(event) {
  * @param {Event} event - The DOM event.
  */
 function onClose(event) {
+  // A close refused because a key operation is in progress must not run the
+  // cancel callback: doing so rebuilt the Key Manager's whole list for a window
+  // that stayed open, which is work with no changed data behind it.
   if (kGenerating) {
     event.preventDefault();
+    return;
   }
 
   window.arguments[0].cancelCallback();
